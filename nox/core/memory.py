@@ -1,4 +1,4 @@
-class AgentMemory:
+class MemoryManager:
     """
     Shared memory for agents.
     Agents can store and retrieve information during tasks.
