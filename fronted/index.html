@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Forge App Builder</title>
+</head>
+
+<body>
+
+<h2>Forge AI App Builder</h2>
+
+<input id="prompt" placeholder="Describe your app..." size="50">
+<button onclick="generate()">Generate App</button>
+
+<p id="status"></p>
+
+<script>
+
+async function generate() {
+
+    const prompt = document.getElementById("prompt").value
+
+    document.getElementById("status").innerText = "Building..."
+
+    const res = await fetch("http://127.0.0.1:8000/build", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({prompt})
+    })
+
+    const data = await res.json()
+
+    const downloadLink = "http://127.0.0.1:8000/download/" + data.download
+
+    document.getElementById("status").innerHTML =
+        `<a href="${downloadLink}">Download Your App</a>`
+}
+
+</script>
+
+</body>
+</html>

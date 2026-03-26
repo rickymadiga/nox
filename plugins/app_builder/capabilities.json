@@ -1,0 +1,14 @@
+{
+  "plugin": "app_builder",
+  "description": "Builds applications",
+  "keywords": [
+    "build",
+    "create",
+    "generate",
+    "app",
+    "application",
+    "dashboard",
+    "cli",
+    "streamlit"
+  ]
+}

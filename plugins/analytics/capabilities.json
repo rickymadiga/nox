@@ -1,0 +1,14 @@
+{
+  "plugin": "analyzer",
+  "description": "Analyzes datasets and generates charts",
+  "keywords": [
+    "analyze",
+    "analysis",
+    "dataset",
+    "data",
+    "chart",
+    "plot",
+    "graph",
+    "statistics"
+  ]
+}
