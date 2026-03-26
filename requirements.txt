@@ -7,7 +7,6 @@ torch
 numpy
 pandas
 fastapi
-uvicorn
 python-dotenv
 stripe
 pydantic
