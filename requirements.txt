@@ -5,7 +5,8 @@ requests
 sentence-transformers
 torch
 numpy
-pandasfastapi
+pandas
+fastapi
 uvicorn
 python-dotenv
 stripe
