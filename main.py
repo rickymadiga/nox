@@ -10,6 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from uvicorn import Config, Server
 
+from database import engine, Base
+from models import User
+from auth import router as auth_router
+
 from nox.core.engine import Engine
 from nox.core.registry import Registry
 from nox.core.event_bus import EventBus
@@ -43,8 +47,21 @@ app = FastAPI()
 
 app.include_router(http_router)
 app.include_router(ws_router)
+app.include_router(auth_router)
 
 app.mount("/static", StaticFiles(directory=BASE_DIR), name="static")
+
+# ─────────────────────────────────────────────────────────────
+# Database Initialization (Added as requested)
+# ─────────────────────────────────────────────────────────────
+def init_database():
+    """Initialize database tables"""
+    try:
+        logger.info("Initializing database schema...")
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables created successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to create database tables: {e}", exc_info=True)
 
 # ─────────────────────────────────────────────────────────────
 # Logging
@@ -99,6 +116,9 @@ async def graceful_shutdown(
 async def bootstrap_system() -> Tuple[Engine, Registry, List[Any], Memory]:
 
     logger.info("🌌 Bootstrapping NOX Core...")
+
+    # Initialize database before anything else
+    init_database()
 
     registry = Registry()
     event_bus = EventBus()
