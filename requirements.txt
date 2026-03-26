@@ -1,0 +1,12 @@
+streamlit
+fastapi
+uvicorn
+requests
+sentence-transformers
+torch
+numpy
+pandasfastapi
+uvicorn
+python-dotenv
+stripe
+pydantic

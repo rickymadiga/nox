@@ -1,0 +1,7 @@
+[
+  {
+    "pattern": "unused import",
+    "action": "remove_import",
+    "success_count": 1
+  }
+]

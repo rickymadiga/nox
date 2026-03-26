@@ -1,0 +1,88 @@
+python -m forge.arena
+
+python -m cli.forge_cli chain-test
+
+
+            +-----------------+
+            ¦   USER / API    ¦
+            +-----------------+
+                     ¦
+                     ?
+             +---------------+
+             ¦  ForgeRuntime ¦
+             +---------------+
+                     ¦
+        +-------------------------+
+        ?                         ?
+   EVENT BUS                STATE STORAGE
+(redis/kafka)             (files/db)
+
+        ¦
+        ?
+   AGENT MESH
+ +-----------------------------------+
+ ¦ Planner ¦ Coder ¦ Tester ¦ Linter ¦
+ ¦ Debugger¦ Deployer ¦ Reviewer     ¦
+ +-----------------------------------+
+
+
+forge/
+¦
++-- core/
+¦   +-- runtime.py
+¦   +-- agent.py
+¦   +-- message.py
+¦   +-- execution_context.py
+¦   +-- event_bus.py
+¦
++-- orchestration/
+¦   +-- task_graph.py
+¦
++-- workers/
+¦   +-- planner.py
+¦   +-- coder.py
+¦   +-- tester.py
+¦   +-- evaluator.py
+¦   +-- assembler.py
+¦
++-- storage/
+¦   +-- memory_store.py
+¦   +-- artifact_store.py
+¦   +-- event_log.py
+¦
++-- learning/
+¦   +-- solution_history.py
+¦   +-- failure_memory.py
+¦   +-- prompt_evolution.py
+¦
++-- evaluation/
+¦   +-- solution_ranker.py
+¦
++-- bus_backends/
+¦   +-- local_bus.py
+¦   +-- redis_stream_bus.py
+¦
++-- tools/
+¦   +-- code_executor.py
+¦   +-- file_writer.py
+¦   +-- test_runner.py
+¦   +-- git_tool.py
+¦   +-- sandbox_runner.py
+¦
++-- arena.py
+
+User Task
+   ?
+Planner
+   ?
+Multiple Coders (parallel)
+   ?
+Tester
+   ?
+Evaluator
+   ?
+Best Solution Selected
+   ?
+Assembler
+   ?
+Project Output

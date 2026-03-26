@@ -1,0 +1,12 @@
+[
+  {
+    "pattern": "unused import",
+    "action": "remove_import",
+    "success_count": 3
+  },
+  {
+    "pattern": "nameerror",
+    "action": "add_import",
+    "success_count": 2
+  }
+]
