@@ -10,3 +10,4 @@ fastapi
 python-dotenv
 stripe
 pydantic
+psycopg2-binary
