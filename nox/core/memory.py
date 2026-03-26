@@ -1,27 +1,9 @@
-class MemoryManager:
-    """
-    Shared memory for agents.
-    Agents can store and retrieve information during tasks.
-    """
-
+class Memory:
     def __init__(self):
-        self.storage = {}
+        self.store = {}
 
-    def write(self, key, value):
-        self.storage[key] = value
+    def save(self, key, value):
+        self.store[key] = value
 
-    def read(self, key):
-        return self.storage.get(key)
-
-    def append(self, key, value):
-
-        if key not in self.storage:
-            self.storage[key] = []
-
-        if not isinstance(self.storage[key], list):
-            self.storage[key] = [self.storage[key]]
-
-        self.storage[key].append(value)
-
-    def all(self):
-        return self.storage
+    def load(self, key):
+        return self.store.get(key)
