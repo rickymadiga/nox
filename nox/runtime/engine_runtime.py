@@ -168,7 +168,7 @@ class Engine:
             "prompt": prompt,
             "intent": "user_prompt",
             "user_id": "default_user"
-        }
+        }  
 
         lily = self.runtime.get_agent("lily")
         billing = self.runtime.get_agent("billing_agent")
