@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from database import Base, engine
 
 from jose import jwt
 from pydantic import BaseModel
@@ -117,6 +118,18 @@ async def signup(data: AuthRequest):
     }
 
     return {"message": "User created"}
+
+# ────────────────────────────────────────────────
+# STARTUP
+# ────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup_event():
+    print("🚀 NOX Backend started successfully")
+
+    # ✅ CREATE TABLES
+    Base.metadata.create_all(bind=engine)
+
+    print("✅ Database tables created")
 
 
 @app.post("/login")
@@ -280,9 +293,3 @@ async def admin_dashboard():
     admin = runtime.get_agent("admin_agent")
     return admin.get_dashboard()
 
-# ────────────────────────────────────────────────
-# STARTUP
-# ────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_event():
-    print("🚀 NOX Backend started")
