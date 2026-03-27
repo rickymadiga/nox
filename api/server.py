@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from nox.runtime.engine_runtime import engine
 
 import stripe
 from dotenv import load_dotenv
@@ -154,7 +155,7 @@ async def chat(data: dict, user=Depends(get_current_user)):
         raise HTTPException(400, "Prompt required")
 
     try:
-        result = await runtime.engine.handle_prompt(prompt, user_id=user)
+        result = await engine.handle_prompt(prompt, user_id=user_id)
         return result
     except Exception as e:
         raise HTTPException(500, str(e))

@@ -34,7 +34,7 @@ st.markdown("""
 # ────────────────────────────────────────────────
 # HEADER
 # ────────────────────────────────────────────────
-st.markdown("<h1 style='text-align:center;'>🤖 NOX SMART WORLD</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;'> NOX SMART WORLD</h1>", unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
 # SESSION STATE
