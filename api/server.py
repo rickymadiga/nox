@@ -193,18 +193,26 @@ async def stream(user=Depends(get_current_user)):
 # ────────────────────────────────────────────────
 # CREDITS
 # ────────────────────────────────────────────────
-@app.get("/credits/{user_id}")
-async def credits(user_id: str, user=Depends(get_current_user)):
-    if user_id != user:
-        raise HTTPException(403, "Unauthorized")
 
+@app.get("/credits")
+async def get_credits(user: str = Depends(get_current_user)):
     billing = runtime.get_agent("billing_agent")
 
     if not billing:
-        u = users_db.get(user_id, {})
-        return {"credits": u.get("credits", 0)}
+        user_data = users_db.get(user, {})
+        return {
+            "credits": user_data.get("credits", 0),
+            "plan": "free",
+            "is_admin": False
+        }
 
-    return billing._get_user(user_id)
+    user_data = billing._get_user(user)
+
+    return {
+        "credits": user_data.get("credits", 0),
+        "plan": user_data.get("plan", "free"),
+        "is_admin": user_data.get("is_admin", False)
+    }
 
 
 # ────────────────────────────────────────────────
