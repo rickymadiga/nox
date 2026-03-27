@@ -12,3 +12,5 @@ stripe
 pydantic
 psycopg2-binary
 python-jose[cryptograph]
+sqlalchemy
+dataases
