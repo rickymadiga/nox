@@ -5,7 +5,7 @@ import json
 # ────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────
-BACKEND_URL = "https://your-backend.onrender.com"  # 🔥 CHANGE THIS
+BACKEND_URL = "https://nox-ui84.onrender.com"  # 🔥 CHANGE THIS
 
 st.set_page_config(
     page_title="NOX SMART WORLD",
