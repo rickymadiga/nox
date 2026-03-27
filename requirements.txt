@@ -11,3 +11,4 @@ python-dotenv
 stripe
 pydantic
 psycopg2-binary
+python-jose[cryptograph]
