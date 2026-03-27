@@ -13,30 +13,29 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from pydantic import BaseModel
 
-# NOX specific
+# NOX
 from nox.runtime.engine_runtime import Runtime
 from nox.runtime.plugin_loader import load_plugins
 
 # ────────────────────────────────────────────────
-# CONFIG & ENVIRONMENT
+# CONFIG
 # ────────────────────────────────────────────────
 load_dotenv()
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-# TODO: Change this in production! Use a strong secret from env
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 
 security = HTTPBearer()
 
 # ────────────────────────────────────────────────
-# FAKE DB (Replace with real Postgres later)
+# TEMP USER STORE (Replace with DB later)
 # ────────────────────────────────────────────────
-users_db: dict = {}  # username -> user dict
+users_db: dict = {}
 
 # ────────────────────────────────────────────────
-# PYDANTIC MODELS
+# MODELS
 # ────────────────────────────────────────────────
 class AuthRequest(BaseModel):
     username: str
@@ -50,266 +49,201 @@ class AutoRechargeRequest(BaseModel):
 # ────────────────────────────────────────────────
 # AUTH HELPERS
 # ────────────────────────────────────────────────
-def create_token(username: str) -> str:
+def create_token(username: str):
     expire = datetime.utcnow() + timedelta(hours=24)
-    to_encode = {"sub": username, "exp": expire}
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode({"sub": username, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> str:
-    token = credentials.credentials
+):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            credentials.credentials,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
         return payload["sub"]
     except JWTError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 # ────────────────────────────────────────────────
-# LIFESPAN
+# SAFE STARTUP (NO CRASH)
 # ────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 NOX Backend starting...")
 
-    # Create tables (if using real DB)
-    from database import Base, engine
-    Base.metadata.create_all(bind=engine)
-    print("✅ Database tables created")
+    try:
+        from database import Base, engine
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database initialized")
+    except Exception as e:
+        print("❌ DB INIT FAILED:", str(e))
 
     yield
+
     print("🛑 NOX Backend shutting down...")
 
 
 # ────────────────────────────────────────────────
-# APP INITIALIZATION
+# APP
 # ────────────────────────────────────────────────
 app = FastAPI(title="NOX AI Backend", lifespan=lifespan)
 
-# Include external routers
-from auth import router as auth_router
-app.include_router(auth_router)
-
-# Mount static exports
-os.makedirs("exports", exist_ok=True)
-app.mount("/exports", StaticFiles(directory="exports"), name="exports")
-
-# Initialize NOX runtime
+# Load runtime
 runtime = Runtime()
 load_plugins(runtime)
 
-# ────────────────────────────────────────────────
+# Static
+os.makedirs("exports", exist_ok=True)
+app.mount("/exports", StaticFiles(directory="exports"), name="exports")
+
 # CORS
-# ────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Tighten this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ────────────────────────────────────────────────
-# ROOT ENDPOINT
+# ROOT
 # ────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {
-        "service": "NOX AI Backend",
-        "status": "running",
-        "version": "3.0"
-    }
+    return {"status": "running", "service": "NOX AI Backend"}
+
 
 # ────────────────────────────────────────────────
-# AUTH ROUTES
+# AUTH
 # ────────────────────────────────────────────────
 @app.post("/signup")
 async def signup(data: AuthRequest):
     if data.username in users_db:
-        raise HTTPException(status_code=400, detail="User already exists")
+        raise HTTPException(400, "User exists")
 
     users_db[data.username] = {
-        "password": data.password,   # TODO: Hash password in production!
+        "password": data.password,
         "credits": 50
     }
 
-    return {"message": "User created successfully"}
+    return {"message": "User created"}
 
 
 @app.post("/login")
 async def login(data: AuthRequest):
     user = users_db.get(data.username)
-    if not user or user.get("password") != data.password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_token(data.username)
-    return {"token": token}
+    if not user or user["password"] != data.password:
+        raise HTTPException(401, "Invalid credentials")
+
+    return {"token": create_token(data.username)}
 
 
 # ────────────────────────────────────────────────
-# CHAT ENDPOINT (Updated with your requested block)
+# CHAT (TOKEN PROTECTED)
 # ────────────────────────────────────────────────
 @app.post("/chat")
-async def chat(
-    data: dict,
-    user=Depends(get_current_user)   # Your preferred simple style
-):
+async def chat(data: dict, user=Depends(get_current_user)):
+    prompt = data.get("prompt", "").strip()
+
+    if not prompt:
+        raise HTTPException(400, "Prompt required")
+
     try:
-        prompt = data.get("prompt", "").strip()
-        if not prompt:
-            raise HTTPException(status_code=400, detail="Prompt is required")
-
-        user_id = user  # 🔥 real authenticated user from token
-
-        # Using runtime as base (consistent with other endpoints)
-        result = await runtime.engine.handle_prompt(prompt, user_id=user_id)
-
+        result = await runtime.engine.handle_prompt(prompt, user_id=user)
         return result
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
 
 # ────────────────────────────────────────────────
-# LOGS & STREAMING
+# STREAM
 # ────────────────────────────────────────────────
-@app.get("/logs")
-async def get_logs(user_id: str = Depends(get_current_user)):
-    code_agent = runtime.get_agent("code_agent")
-    if not code_agent:
-        return {"logs": []}
-
-    try:
-        logs = await code_agent.run({"user_id": user_id})
-        return {"logs": logs}
-    except Exception:
-        return {"logs": []}
-
-
 @app.get("/stream")
-async def stream_logs(user_id: str = Depends(get_current_user)):
-    code_agent = runtime.get_agent("code_agent")
-    if not code_agent:
-        async def empty_generator():
-            yield "data: [No code_agent available]\n\n"
-        return StreamingResponse(empty_generator(), media_type="text/event-stream")
+async def stream(user=Depends(get_current_user)):
+    agent = runtime.get_agent("code_agent")
 
-    async def event_generator():
+    if not agent:
+        async def empty():
+            yield "data: No agent\n\n"
+        return StreamingResponse(empty(), media_type="text/event-stream")
+
+    async def generator():
         try:
-            async for message in code_agent.stream(user_id):
-                msg = str(message.get("message", message) if isinstance(message, dict) else message)
-                yield f"data: {msg}\n\n"
+            async for msg in agent.stream(user):
+                yield f"data: {str(msg)}\n\n"
         except Exception as e:
-            yield f"data: [ERROR] {str(e)}\n\n"
+            yield f"data: ERROR {str(e)}\n\n"
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
-    )
+    return StreamingResponse(generator(), media_type="text/event-stream")
 
 
 # ────────────────────────────────────────────────
-# CREDITS & BILLING
+# CREDITS
 # ────────────────────────────────────────────────
 @app.get("/credits/{user_id}")
-async def get_credits(
-    user_id: str,
-    current_user: str = Depends(get_current_user)
-):
-    if user_id != current_user:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+async def credits(user_id: str, user=Depends(get_current_user)):
+    if user_id != user:
+        raise HTTPException(403, "Unauthorized")
 
     billing = runtime.get_agent("billing_agent")
-    if not billing:
-        user = users_db.get(user_id, {})
-        return {
-            "credits": user.get("credits", 0),
-            "plan": "free",
-            "is_admin": False
-        }
 
-    user = billing._get_user(user_id)
-    return {
-        "credits": user.get("credits", 0),
-        "plan": user.get("plan", "free"),
-        "is_admin": user.get("is_admin", False)
-    }
+    if not billing:
+        u = users_db.get(user_id, {})
+        return {"credits": u.get("credits", 0)}
+
+    return billing._get_user(user_id)
 
 
 # ────────────────────────────────────────────────
-# STRIPE CHECKOUT
+# STRIPE
 # ────────────────────────────────────────────────
 @app.post("/create-checkout-session")
-async def create_checkout(
-    payload: dict,
-    user_id: str = Depends(get_current_user)
-):
-    try:
-        plan = payload.get("plan", "").lower()
-        price_map = {
-            "starter": 500,
-            "pro": 2000,
-            "mega": 5000
-        }
+async def checkout(data: dict, user=Depends(get_current_user)):
+    plan = data.get("plan")
 
-        amount = price_map.get(plan)
-        if not amount:
-            raise HTTPException(status_code=400, detail="Invalid plan")
+    prices = {
+        "starter": 500,
+        "pro": 2000,
+        "mega": 5000
+    }
 
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            mode="payment",
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": f"{plan.title()} Credits"},
-                    "unit_amount": amount,
-                },
-                "quantity": 1,
-            }],
-            success_url="http://localhost:8501?success=true",
-            cancel_url="http://localhost:8501?cancel=true",
-            metadata={"user_id": user_id, "plan": plan}
-        )
+    amount = prices.get(plan)
+    if not amount:
+        raise HTTPException(400, "Invalid plan")
 
-        return {"url": session.url}
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        mode="payment",
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {"name": f"{plan} credits"},
+                "unit_amount": amount,
+            },
+            "quantity": 1,
+        }],
+        success_url="https://your-frontend-url?success=true",
+        cancel_url="https://your-frontend-url?cancel=true",
+        metadata={"user_id": user, "plan": plan}
+    )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"url": session.url}
 
 
 # ────────────────────────────────────────────────
 # AUTO RECHARGE
 # ────────────────────────────────────────────────
 @app.post("/toggle-auto-recharge")
-async def toggle_auto_recharge(
-    req: AutoRechargeRequest,
-    user_id: str = Depends(get_current_user)
-):
+async def toggle(req: AutoRechargeRequest, user=Depends(get_current_user)):
     billing = runtime.get_agent("billing_agent")
+
     if not billing:
-        return {"status": "error", "detail": "Billing agent not available"}
+        return {"status": "no billing agent"}
 
-    billing.set_auto_recharge(user_id, req.enabled)
+    billing.set_auto_recharge(user, req.enabled)
     return {"status": "ok"}
-
-
-# ────────────────────────────────────────────────
-# ADMIN
-# ────────────────────────────────────────────────
-@app.get("/admin/dashboard")
-async def admin_dashboard():
-    admin = runtime.get_agent("admin_agent")
-    if not admin:
-        raise HTTPException(status_code=503, detail="Admin agent not loaded")
-    return admin.get_dashboard()
