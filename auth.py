@@ -1,19 +1,12 @@
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt
+from fastapi import APIRouter, HTTPException
 
-security = HTTPBearer()
+router = APIRouter()   # ✅ THIS LINE IS REQUIRED
 
-SECRET_KEY = "supersecret"
-ALGORITHM = "HS256"
+# Example routes
+@router.post("/signup")
+def signup(data: dict):
+    return {"message": "Signup works"}
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    token = credentials.credentials
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload["sub"]
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+@router.post("/login")
+def login(data: dict):
+    return {"token": "fake-token"}
