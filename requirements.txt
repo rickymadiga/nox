@@ -16,3 +16,4 @@ python-jose[cryptograph]
 sqlalchemy
 databases
 passlib[bcrypt]
+bcrypt
