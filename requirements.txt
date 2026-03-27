@@ -16,3 +16,4 @@ sqlalchemy
 databases
 passlib[bcrypt]
 bcrypt
+groq
