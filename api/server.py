@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 import stripe
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,13 +25,13 @@ load_dotenv()
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 # TODO: Change this in production! Use a strong secret from env
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")  # ← Move to .env in prod
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 
 security = HTTPBearer()
 
 # ────────────────────────────────────────────────
-# FAKE DB (Replace with real Postgres + SQLAlchemy later)
+# FAKE DB (Replace with real Postgres later)
 # ────────────────────────────────────────────────
 users_db: dict = {}  # username -> user dict
 
@@ -72,7 +72,7 @@ def get_current_user(
 
 
 # ────────────────────────────────────────────────
-# LIFESPAN (Recommended replacement for @app.on_event)
+# LIFESPAN
 # ────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -83,8 +83,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables created")
 
-    yield  # App runs here
-
+    yield
     print("🛑 NOX Backend shutting down...")
 
 
@@ -146,7 +145,7 @@ async def signup(data: AuthRequest):
 @app.post("/login")
 async def login(data: AuthRequest):
     user = users_db.get(data.username)
-    if not user or user["password"] != data.password:
+    if not user or user.get("password") != data.password:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_token(data.username)
@@ -154,19 +153,23 @@ async def login(data: AuthRequest):
 
 
 # ────────────────────────────────────────────────
-# CHAT ENDPOINT (Protected)
+# CHAT ENDPOINT (Updated with your requested block)
 # ────────────────────────────────────────────────
 @app.post("/chat")
 async def chat(
     data: dict,
-    user_id: str = Depends(get_current_user)
+    user=Depends(get_current_user)   # Your preferred simple style
 ):
     try:
         prompt = data.get("prompt", "").strip()
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
 
-        result = await runtime.engine.handle_prompt(prompt, user_id=user_id)  # assuming runtime.engine
+        user_id = user  # 🔥 real authenticated user from token
+
+        # Using runtime as base (consistent with other endpoints)
+        result = await runtime.engine.handle_prompt(prompt, user_id=user_id)
+
         return result
 
     except Exception as e:
@@ -193,7 +196,6 @@ async def get_logs(user_id: str = Depends(get_current_user)):
 async def stream_logs(user_id: str = Depends(get_current_user)):
     code_agent = runtime.get_agent("code_agent")
     if not code_agent:
-        # Return empty stream
         async def empty_generator():
             yield "data: [No code_agent available]\n\n"
         return StreamingResponse(empty_generator(), media_type="text/event-stream")
@@ -229,7 +231,6 @@ async def get_credits(
 
     billing = runtime.get_agent("billing_agent")
     if not billing:
-        # Fallback to fake db
         user = users_db.get(user_id, {})
         return {
             "credits": user.get("credits", 0),
@@ -278,7 +279,7 @@ async def create_checkout(
             }],
             success_url="http://localhost:8501?success=true",
             cancel_url="http://localhost:8501?cancel=true",
-            metadata={"user_id": user_id, "plan": plan}   # Good for webhook later
+            metadata={"user_id": user_id, "plan": plan}
         )
 
         return {"url": session.url}
@@ -304,7 +305,7 @@ async def toggle_auto_recharge(
 
 
 # ────────────────────────────────────────────────
-# ADMIN (No auth protection here — add if needed)
+# ADMIN
 # ────────────────────────────────────────────────
 @app.get("/admin/dashboard")
 async def admin_dashboard():
