@@ -147,18 +147,25 @@ async def login(data: AuthRequest):
 # ────────────────────────────────────────────────
 # CHAT (TOKEN PROTECTED)
 # ────────────────────────────────────────────────
+
 @app.post("/chat")
-async def chat(data: dict, user=Depends(get_current_user)):
-    prompt = data.get("prompt", "").strip()
-
-    if not prompt:
-        raise HTTPException(400, "Prompt required")
-
+async def chat(
+    data: dict,
+    user: str = Depends(get_current_user)   # 👈 this gives username
+):
     try:
-        result = await engine.handle_prompt(prompt, user_id=user_id)
+        prompt = data.get("prompt", "").strip()
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+
+        # ✅ FIX: use user (not user_id)
+        result = await engine.handle_prompt(prompt, user_id=user)
+
         return result
+
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ────────────────────────────────────────────────

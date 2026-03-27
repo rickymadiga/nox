@@ -35,7 +35,7 @@ st.markdown("""
 st.title("📊 NOX Enterprise Dashboard")
 st.caption("Real-time monitoring & insights | Last updated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = "https://nox-ui84.onrender.com"
 
 # ────────────────────────────────────────────────
 # CACHING HELPERS (Big performance win)
