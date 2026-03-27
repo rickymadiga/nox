@@ -1,30 +1,33 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# 🚨 HARD FAIL (prevents silent bugs)
+# 🚨 Fail fast if missing
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL is not set")
 
-# 🔥 Fix for Render postgres bug
+# 🔥 Fix Render postgres bug
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ✅ ENGINE (UPDATED)
+# ✅ Engine
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     future=True
 )
 
-# ✅ SESSION
+# ✅ Session
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine
 )
+
+# ✅ Base (THIS FIXES YOUR ERROR)
+Base = declarative_base()
