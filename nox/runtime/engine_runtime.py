@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import json
 from typing import Any, Dict, List, Optional, Callable
 from collections import defaultdict
 
@@ -102,8 +101,6 @@ class Runtime:
                 return name, {"error": "agent not found"}
 
             try:
-                print(f"[RUNTIME] → Executing {name}")
-
                 result = agent.run(task)
                 if asyncio.iscoroutine(result):
                     result = await result
@@ -128,46 +125,43 @@ class Runtime:
 
 
 # ────────────────────────────────────────────────
-# ENGINE (LILY-FIRST + BILLING + MONETIZATION)
+# ENGINE
 # ────────────────────────────────────────────────
 class Engine:
     def __init__(self):
         self.runtime = Runtime()
 
-        # Load plugins (Lily, billing_agent, monetization_agent, stripe_agent, etc.)
+        # Load all plugins
         load_plugins(self.runtime)
 
         logger.info("[ENGINE] Ready")
 
     def _synthesize(self, results: Dict[str, Any]) -> str:
-        """Simple synthesis helper"""
         if not results:
             return "No output."
 
         messages = []
         for agent, res in results.items():
             if isinstance(res, dict):
-                if "message" in res:
-                    messages.append(res["message"])
-                elif "response" in res:
-                    messages.append(res["response"])
-                elif "output" in res:
-                    messages.append(res["output"])
-                else:
-                    messages.append(f"{agent}: {str(res)}")
+                messages.append(
+                    res.get("message")
+                    or res.get("response")
+                    or res.get("output")
+                    or f"{agent}: {str(res)}"
+                )
             else:
                 messages.append(f"{agent}: {str(res)}")
 
         return "\n\n".join(messages)
 
     async def handle_prompt(self, prompt: str, user_id: str) -> Dict[str, Any]:
-        if not prompt or not prompt.strip():
+        if not prompt.strip():
             return {"status": "error", "response": "Empty prompt"}
 
         task = {
             "prompt": prompt,
             "intent": "user_prompt",
-            "user_id": user_id   # ✅ REAL USER
+            "user_id": user_id
         }
 
         lily = self.runtime.get_agent("lily")
@@ -178,25 +172,16 @@ class Engine:
             return {"status": "error", "response": "Lily not available"}
 
         try:
-            # =========================
-            # 1. LILY DECIDES
-            # =========================
             lily_res = lily.run(task)
             if asyncio.iscoroutine(lily_res):
                 lily_res = await lily_res
 
             if not isinstance(lily_res, dict):
-                return {
-                    "status": "success",
-                    "response": str(lily_res)
-                }
+                return {"status": "success", "response": str(lily_res)}
 
             action = lily_res.get("action", "respond")
 
-            # =========================
-            # 2. BILLING CHECK (WITH ADMIN BYPASS 🔥)
-            # =========================
-            cost = 0
+            # ───── BILLING (ADMIN SAFE) ─────
             is_admin = False
 
             if billing:
@@ -210,118 +195,49 @@ class Engine:
                     })
 
                     if isinstance(bill_res, dict) and bill_res.get("status") == "blocked":
-                        upsell_msg = None
-                        trigger = None
-
-                        if monetizer:
-                            upsell = monetizer.run({
-                                "user_id": user_id,
-                                "action": action,
-                                "success": False
-                            })
-
-                            if isinstance(upsell, dict) and upsell.get("upsell"):
-                                upsell_msg = upsell.get("message")
-                                trigger = upsell.get("trigger")
-
                         return {
                             "status": "error",
-                            "response": bill_res.get("message", "Not enough credits"),
-                            "upsell": upsell_msg,
-                            "trigger": trigger
+                            "response": bill_res.get("message", "Not enough credits")
                         }
-
-                    cost = bill_res.get("cost", 0) if isinstance(bill_res, dict) else 0
                 else:
-                    print(f"[ADMIN BYPASS] {user_id} skipping billing")
+                    logger.info(f"[ADMIN BYPASS] {user_id}")
 
-            # =========================
-            # 3. EXECUTE ACTION
-            # =========================
-            results: Optional[Dict[str, Any]] = None
-            final_response: str = ""
+            # ───── EXECUTION ─────
+            results = None
 
             if action == "respond":
-                final_response = lily_res.get("message") or "Done."
+                final_response = lily_res.get("message", "Done.")
 
             elif action == "delegate":
                 target = lily_res.get("target")
-                if not target:
-                    return {"status": "error", "response": "No target specified"}
-
                 results = await self.runtime.execute_agents([target], task)
                 final_response = self._synthesize(results)
 
             elif action == "delegate_multi":
                 targets = lily_res.get("targets", [])
-                if not targets:
-                    return {"status": "error", "response": "No targets provided"}
-
                 results = await self.runtime.execute_agents(targets, task)
                 final_response = self._synthesize(results)
 
             elif action == "orchestrate":
                 agents = self.runtime.capabilities.match(prompt)
-                if not agents:
-                    return {
-                        "status": "success",
-                        "response": "No suitable agent found."
-                    }
-
                 results = await self.runtime.execute_agents(agents, task)
                 final_response = self._synthesize(results)
 
             else:
                 final_response = lily_res.get("message", "Done.")
 
-            # =========================
-            # 4. AUTO RECHARGE (SKIP FOR ADMIN 🔥)
-            # =========================
-            if billing and not is_admin:
-                user_data = billing._get_user(user_id)
-
-                if user_data.get("credits", 0) < 5 and user_data.get("auto_recharge"):
-                    stripe_agent = self.runtime.get_agent("stripe_agent")
-
-                    if stripe_agent:
-                        try:
-                            stripe_agent.auto_charge(user_id=user_id, amount=500)
-                            billing.add_credits(user_id, 100)
-                            print(f"[AUTO-RECHARGE] Triggered for {user_id}")
-                        except Exception as e:
-                            print(f"[AUTO-RECHARGE FAILED] {e}")
-
-            # =========================
-            # 5. MONETIZATION
-            # =========================
-            upsell_msg = None
-            trigger = None
-
-            if monetizer and not is_admin:
-                upsell = monetizer.run({
-                    "user_id": user_id,
-                    "action": action,
-                    "success": True
-                })
-
-                if isinstance(upsell, dict) and upsell.get("upsell"):
-                    upsell_msg = upsell.get("message")
-                    trigger = upsell.get("trigger")
-
-            # =========================
-            # FINAL RESPONSE
-            # =========================
             return {
                 "status": "success",
                 "response": final_response,
-                "upsell": upsell_msg,
-                "trigger": trigger,
                 "results": results
             }
 
         except Exception as e:
             logger.error(f"[ENGINE ERROR] {e}", exc_info=True)
-            return {
-                "status": "error",
-                "response": f"Internal error: {str(e)}"
-            }
+            return {"status": "error", "response": str(e)}
+
+
+# ────────────────────────────────────────────────
+# ✅ CRITICAL FIX (THIS WAS MISSING)
+# ────────────────────────────────────────────────
+engine = Engine()
