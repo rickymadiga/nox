@@ -32,7 +32,7 @@ security = HTTPBearer()
 # ────────────────────────────────────────────────
 # GLOBAL INSTANCES
 # ────────────────────────────────────────────────
-runtime = Runtime()
+runtime = engine.runtime
 engine = Engine()                    # Your preferred global engine
 
 # ────────────────────────────────────────────────
@@ -175,7 +175,7 @@ async def chat(
             raise HTTPException(status_code=400, detail="Prompt is required")
 
         # Your exact logic:
-        result = await engine.handle_prompt(prompt, user_id=user)
+        result = await engine.handle_prompt(prompt)
 
         return result
 
