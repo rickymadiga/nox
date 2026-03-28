@@ -1,4 +1,4 @@
-from nox.plugins.app_builder.forge.arena.arena import run_forge
+from plugins.app_builder.forge.arena.arena import run_forge
 
 
 class AppBuilderAgent:
