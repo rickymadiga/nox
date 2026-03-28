@@ -14,7 +14,7 @@ from jose import jwt, JWTError
 from pydantic import BaseModel
 
 # NOX
-from nox.runtime.engine_runtime import Runtime, Engine
+from nox.runtime.engine_runtime import engine
 from nox.runtime.plugin_loader import load_plugins
 
 # ────────────────────────────────────────────────
