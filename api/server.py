@@ -33,7 +33,6 @@ security = HTTPBearer()
 # GLOBAL INSTANCES
 # ────────────────────────────────────────────────
 runtime = engine.runtime
-engine = Engine()                    # Your preferred global engine
 
 # ────────────────────────────────────────────────
 # TEMP USER STORE (Replace with real DB later)
