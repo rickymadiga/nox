@@ -78,14 +78,15 @@ async def run_task_pipeline(bus: EventBus, task: str) -> None:
     print("[Arena] Pipeline cycle finished.\n")
 
 
-async def run_forge(task: str):
+async def run_forge(task: str, runtime=None):
 
-    bus = EventBus()
+    # ✅ use main system bus if available
+    bus = runtime["bus"] if runtime and "bus" in runtime else EventBus()
     bus.message_class = Message
 
-    context = {""
-    "bus": bus,
-    "runtime": None
+    context = {
+        "bus": bus,
+        "runtime": runtime
     }
 
     memory = Memory("memory", bus, context)
