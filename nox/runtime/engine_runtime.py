@@ -131,7 +131,7 @@ class Engine:
     def __init__(self):
         self.runtime = Runtime()
 
-        # Load all plugins
+        # Load all plugins (Lily, billing, monetization, etc.)
         load_plugins(self.runtime)
 
         logger.info("[ENGINE] Ready")
@@ -172,6 +172,7 @@ class Engine:
             return {"status": "error", "response": "Lily not available"}
 
         try:
+            # LILY DECISION
             lily_res = lily.run(task)
             if asyncio.iscoroutine(lily_res):
                 lily_res = await lily_res
@@ -181,7 +182,7 @@ class Engine:
 
             action = lily_res.get("action", "respond")
 
-            # ───── BILLING (ADMIN SAFE) ─────
+            # ───── BILLING CHECK (ADMIN BYPASS) ─────
             is_admin = False
 
             if billing:
@@ -202,26 +203,32 @@ class Engine:
                 else:
                     logger.info(f"[ADMIN BYPASS] {user_id}")
 
-            # ───── EXECUTION ─────
+            # ───── ACTION EXECUTION ─────
             results = None
+            final_response = ""
 
             if action == "respond":
                 final_response = lily_res.get("message", "Done.")
 
             elif action == "delegate":
                 target = lily_res.get("target")
-                results = await self.runtime.execute_agents([target], task)
-                final_response = self._synthesize(results)
+                if target:
+                    results = await self.runtime.execute_agents([target], task)
+                    final_response = self._synthesize(results)
 
             elif action == "delegate_multi":
                 targets = lily_res.get("targets", [])
-                results = await self.runtime.execute_agents(targets, task)
-                final_response = self._synthesize(results)
+                if targets:
+                    results = await self.runtime.execute_agents(targets, task)
+                    final_response = self._synthesize(results)
 
             elif action == "orchestrate":
                 agents = self.runtime.capabilities.match(prompt)
-                results = await self.runtime.execute_agents(agents, task)
-                final_response = self._synthesize(results)
+                if agents:
+                    results = await self.runtime.execute_agents(agents, task)
+                    final_response = self._synthesize(results)
+                else:
+                    final_response = "No suitable agent found."
 
             else:
                 final_response = lily_res.get("message", "Done.")
@@ -238,6 +245,6 @@ class Engine:
 
 
 # ────────────────────────────────────────────────
-# ✅ CRITICAL FIX (THIS WAS MISSING)
+# GLOBAL ENGINE INSTANCE
 # ────────────────────────────────────────────────
 engine = Engine()
