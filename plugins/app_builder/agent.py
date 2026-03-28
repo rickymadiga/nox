@@ -12,7 +12,7 @@ class AppBuilderAgent:
 
         print(f"[AppBuilder] received prompt: {prompt}")
 
-        result = await run_forge(prompt, rutime=self.runtime)
+        result = await run_forge(prompt, runtime=self.runtime)
 
         return {
             "agent": "app_builder",
