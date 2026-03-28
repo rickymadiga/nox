@@ -55,7 +55,7 @@ class EventBus:
             tasks.append(self._safe_execute(handler, message, agent))
 
         if tasks:
-            await asyncio.gather(*tasks["user_id"])
+            await asyncio.gather(*tasks)
 
     # -----------------------------
     # Safe execution
