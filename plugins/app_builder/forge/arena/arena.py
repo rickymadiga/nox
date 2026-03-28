@@ -80,8 +80,7 @@ async def run_task_pipeline(bus: EventBus, task: str) -> None:
 
 async def run_forge(task: str, runtime=None):
 
-    # ✅ use main system bus if available
-    bus = runtime["bus"] if runtime and "bus" in runtime else EventBus()
+    bus = EventBus()
     bus.message_class = Message
 
     context = {
