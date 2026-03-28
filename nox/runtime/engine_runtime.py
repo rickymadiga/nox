@@ -92,8 +92,6 @@ class Runtime:
         agent_names: List[str],
         task: Dict[str, Any]
     ) -> Dict[str, Any]:
-        if isinstance(task, str):
-            task = {"prompt": task}
 
         async def run_single(name: str):
             agent = self.get_agent(name)
@@ -131,8 +129,11 @@ class Engine:
     def __init__(self):
         self.runtime = Runtime()
 
-        # Load all plugins (Lily, billing, monetization, etc.)
-        load_plugins(self.runtime)
+        # Load plugins safely
+        try:
+            load_plugins(self.runtime)
+        except Exception as e:
+            logger.error(f"[PLUGIN LOAD ERROR] {e}", exc_info=True)
 
         logger.info("[ENGINE] Ready")
 
@@ -154,8 +155,8 @@ class Engine:
 
         return "\n\n".join(messages)
 
-    async def handle_prompt(self, prompt: str, user_id: str) -> Dict[str, Any]:
-        if not prompt.strip():
+    async def handle_prompt(self, prompt: str, user_id: str = "guest") -> Dict[str, Any]:
+        if not prompt or not prompt.strip():
             return {"status": "error", "response": "Empty prompt"}
 
         task = {
@@ -166,13 +167,12 @@ class Engine:
 
         lily = self.runtime.get_agent("lily")
         billing = self.runtime.get_agent("billing_agent")
-        monetizer = self.runtime.get_agent("monetization_agent")
 
         if not lily:
             return {"status": "error", "response": "Lily not available"}
 
         try:
-            # LILY DECISION
+            # ───── LILY DECISION ─────
             lily_res = lily.run(task)
             if asyncio.iscoroutine(lily_res):
                 lily_res = await lily_res
@@ -182,26 +182,28 @@ class Engine:
 
             action = lily_res.get("action", "respond")
 
-            # ───── BILLING CHECK (ADMIN BYPASS) ─────
-            is_admin = False
-
+            # ───── BILLING (SAFE + ADMIN BYPASS) ─────
             if billing:
-                user_data = billing._get_user(user_id)
-                is_admin = user_data.get("is_admin", False)
+                try:
+                    user_data = billing._get_user(user_id) or {}
+                    is_admin = user_data.get("is_admin", False)
 
-                if not is_admin:
-                    bill_res = billing.run({
-                        "user_id": user_id,
-                        "action": action
-                    })
+                    if not is_admin:
+                        bill_res = billing.run({
+                            "user_id": user_id,
+                            "action": action
+                        })
 
-                    if isinstance(bill_res, dict) and bill_res.get("status") == "blocked":
-                        return {
-                            "status": "error",
-                            "response": bill_res.get("message", "Not enough credits")
-                        }
-                else:
-                    logger.info(f"[ADMIN BYPASS] {user_id}")
+                        if isinstance(bill_res, dict) and bill_res.get("status") == "blocked":
+                            return {
+                                "status": "error",
+                                "response": bill_res.get("message", "Not enough credits")
+                            }
+                    else:
+                        logger.info(f"[ADMIN BYPASS] {user_id}")
+
+                except Exception as e:
+                    logger.warning(f"[BILLING ERROR IGNORED] {e}")
 
             # ───── ACTION EXECUTION ─────
             results = None
@@ -245,6 +247,6 @@ class Engine:
 
 
 # ────────────────────────────────────────────────
-# GLOBAL ENGINE INSTANCE
+# GLOBAL SINGLETON (CRITICAL FIX)
 # ────────────────────────────────────────────────
 engine = Engine()
