@@ -41,22 +41,30 @@ class Runtime:
             return None
 
 
-async def create_and_register_agents(runtime: Runtime) -> None:
+async def create_and_register_agents(context: dict) -> None:
     print("[Arena] Creating and registering agents...\n")
 
-    for agent_class, name in AGENTS:
-        agent = agent_class(name, runtime.bus, runtime)
-        agent.runtime = runtime
+    context["agents"] = []
 
-        agent.runtime = runtime  # ✅ consistent runtime injection
+    def get_agent(name):
+        for a in context["agents"]:
+            if a.name == name:
+                return a
+        return None
+
+    context["get_agent"] = get_agent
+
+    for agent_class, name in AGENTS:
+        agent = agent_class(name, context["bus"], context)
+
+        agent.runtime = context
         agent.register()
 
-        runtime.agents.append(agent)
+        context["agents"].append(agent)
 
         print(f"[Arena] {name.capitalize()} registered")
 
     print("\n[Arena] All agents registered successfully.\n")
-
 
 async def run_task_pipeline(runtime: Runtime, task: str) -> None:
 
@@ -77,21 +85,25 @@ async def run_task_pipeline(runtime: Runtime, task: str) -> None:
 
     print("[Arena] Pipeline cycle finished.\n")
 
-
-async def run_forge(task: str):
-
+async def run_forge(task: str, runtime: dict | None = None):
     bus = EventBus()
     bus.message_class = Message
 
-    runtime = Runtime(bus)
+    # ✅ use passed runtime or create new one
+    context = runtime if runtime else {}
 
-    # ✅ memory attached to runtime
-    memory = Memory("memory", bus, runtime)
-    runtime.memory = memory
+    context["bus"] = bus
+    context["runtime"] = context
 
-    await create_and_register_agents(runtime)
+    # ✅ ensure agents list exists (fixes your earlier crash)
+    context["agents"] = []
 
-    await run_task_pipeline(runtime, task)
+    memory = Memory("memory", bus, context)
+    context["memory"] = memory
+
+    await create_and_register_agents(context)
+
+    await run_task_pipeline(bus, task)
 
     return {
         "status": "completed",
