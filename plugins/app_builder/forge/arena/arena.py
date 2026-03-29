@@ -1,5 +1,5 @@
 import asyncio
-from typing import Final, List
+from typing import Final
 
 from ..core.event_bus import EventBus
 from ..core.message import Message
@@ -10,8 +10,8 @@ from ..agents.coder import Coder
 from ..agents.tester import Tester
 from ..agents.reviewer import Reviewer
 from ..agents.debugger import Debugger
-from ..agents.assembler import Assembler
 from ..agents.fixer import Fixer
+from ..agents.assembler import Assembler
 
 
 AGENTS = [
@@ -27,47 +27,41 @@ AGENTS = [
 INITIAL_WAIT_AFTER_TASK: Final[float] = 8.0
 
 
-# ✅ CLEAN RUNTIME OBJECT (fixes ALL your errors)
+# ✅ Clean Runtime
 class Runtime:
     def __init__(self, bus):
         self.bus = bus
         self.agents = []
         self.memory = None
 
-    def get_agent(self, name):
-        for a in self.agents:
-            if a.name == name:
-                return a
-            return None
-
-
-async def create_and_register_agents(context: dict) -> None:
-    print("[Arena] Creating and registering agents...\n")
-
-    context["agents"] = []
-
-    def get_agent(name):
-        for a in context["agents"]:
-            if a.name == name:
-                return a
+    def get_agent(self, name: str):
+        for agent in self.agents:
+            if getattr(agent, "name", None) == name:
+                return agent
         return None
 
-    context["get_agent"] = get_agent
+
+async def create_and_register_agents(runtime: Runtime) -> None:
+    """Register all agents into the runtime"""
+    print("[Arena] Creating and registering agents...\n")
+
+    runtime.agents.clear()   # Clean slate
 
     for agent_class, name in AGENTS:
-        agent = agent_class(name, context["bus"], context)
+        try:
+            agent = agent_class(name, runtime.bus, runtime)
+            agent.runtime = runtime
+            agent.register()
 
-        agent.runtime = context
-        agent.register()
-
-        context["agents"].append(agent)
-
-        print(f"[Arena] {name.capitalize()} registered")
+            runtime.agents.append(agent)
+            print(f"[Arena] {name.capitalize()} registered")
+        except Exception as e:
+            print(f"[Arena] Failed to register {name}: {e}")
 
     print("\n[Arena] All agents registered successfully.\n")
 
-async def run_task_pipeline(runtime: Runtime, task: str) -> None:
 
+async def run_task_pipeline(runtime: Runtime, task: str) -> None:
     message = Message(
         sender="arena",
         recipient="planner",
@@ -79,31 +73,30 @@ async def run_task_pipeline(runtime: Runtime, task: str) -> None:
 
     await runtime.bus.publish(message)
 
-    print(f"[Arena] Waiting {INITIAL_WAIT_AFTER_TASK:.1f}s...\n")
-
+    print(f"[Arena] Waiting {INITIAL_WAIT_AFTER_TASK:.1f}s after task...\n")
     await asyncio.sleep(INITIAL_WAIT_AFTER_TASK)
 
     print("[Arena] Pipeline cycle finished.\n")
 
-async def run_forge(task: str, runtime: dict | None = None):
+
+async def run_forge(task: str, runtime: Runtime | None = None):
+    print("[EventBus] Initialized")
+
     bus = EventBus()
     bus.message_class = Message
 
-    # ✅ use passed runtime or create new one
-    context = runtime if runtime else {}
+    # Create runtime if not provided
+    if runtime is None:
+        runtime = Runtime(bus)
 
-    context["bus"] = bus
-    context["runtime"] = context
+    runtime.bus = bus
+    runtime.memory = Memory("memory", bus, runtime)
 
-    # ✅ ensure agents list exists (fixes your earlier crash)
-    context["agents"] = []
+    # Register all agents
+    await create_and_register_agents(runtime)
 
-    memory = Memory("memory", bus, context)
-    context["memory"] = memory
-
-    await create_and_register_agents(context)
-
-    await run_task_pipeline(bus, task)
+    # Run the actual task
+    await run_task_pipeline(runtime, task)
 
     return {
         "status": "completed",
