@@ -13,18 +13,17 @@ class Debugger(Agent):
         self.bus.subscribe("REVIEW_COMPLETED", self.handle)
 
     async def handle(self, message: Message) -> None:
-
         payload = message.payload or {}
 
-        files = payload.get("files", {})
-        task = payload.get("task", "")
-        error_type = payload.get("error_type", "unknown")
-        attempts = payload.get("fix_attempts", 0)
-        passed = payload.get("passed", False)
+        files: Dict[str, str] = payload.get("files", {})
+        task: str = payload.get("task", "")
+        error_type: str = payload.get("error_type", "unknown")
+        attempts: int = payload.get("fix_attempts", 0)
+        passed: bool = payload.get("passed", False)
 
         print(f"[Debugger] Attempt {attempts} | Type: {error_type}")
 
-        # ✅ SUCCESS
+        # ✅ SUCCESS - Tests passed
         if passed:
             await self.bus.publish(
                 Message(
@@ -36,10 +35,9 @@ class Debugger(Agent):
             )
             return
 
-        # 🛑 STOP CONDITION
+        # 🛑 STOP CONDITION - Max attempts reached
         if attempts >= self.MAX_ATTEMPTS:
-            print("[Debugger] Max attempts → safe fallback")
-
+            print("[Debugger] Max attempts reached → safe fallback")
             await self.bus.publish(
                 Message(
                     sender=self.name,
@@ -50,7 +48,7 @@ class Debugger(Agent):
             )
             return
 
-        # 🧠 DECISION LOGIC
+        # 🧠 DECISION LOGIC - Route based on error type
         if error_type in ["syntax_error", "missing_import", "runtime_error"]:
             next_agent = "fixer"
         elif error_type in ["timeout", "logic_error"]:
@@ -60,6 +58,7 @@ class Debugger(Agent):
 
         print(f"[Debugger] Routing → {next_agent}")
 
+        # Forward to next agent (Fixer or Coder)
         await self.bus.publish(
             Message(
                 sender=self.name,

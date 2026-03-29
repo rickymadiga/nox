@@ -1,4 +1,5 @@
 from typing import Any, Dict
+
 from ..core.agent import Agent
 from ..core.message import Message
 
@@ -12,7 +13,6 @@ class Fixer(Agent):
         self.bus.subscribe("REVIEW_COMPLETED", self.handle)
 
     async def handle(self, message: Message):
-
         if message.message_type != "REVIEW_COMPLETED":
             return
 
@@ -21,25 +21,23 @@ class Fixer(Agent):
         files: Dict[str, str] = payload.get("files", {})
         task: str = payload.get("task", "")
         attempts: int = payload.get("fix_attempts", 0)
-        errors = payload.get("errors", [])
-        error_type = payload.get("error_type", "unknown")
+        errors: list = payload.get("errors", [])
+        error_type: str = payload.get("error_type", "unknown")
 
         print(f"[Fixer] Attempt {attempts} | Type: {error_type}")
 
-        # ✅ STOP CONDITION
+        # ✅ STOP CONDITION - Max attempts reached
         if attempts >= self.MAX_ATTEMPTS:
-            print("[Fixer] Max attempts → forcing safe output")
+            print("[Fixer] Max attempts reached → forcing safe output")
             await self._approve(files, task)
             return
 
         # -------------------------------------------------
-        # 🔥 CALL LILY (REAL FIX)
+        # FIX CODE USING LILY
         # -------------------------------------------------
-        fixed_files = files
+        fixed_files = files.copy()  # Safe copy to avoid mutating original
 
         lily = None
-
-        # Try to get Lily safely
         if hasattr(self, "runtime") and self.runtime:
             try:
                 lily = self.runtime.get_agent("lily")
@@ -48,7 +46,7 @@ class Fixer(Agent):
 
         if lily:
             try:
-                print("[Fixer] Using Lily 🧠")
+                print("[Fixer] Using Lily 🧠 for fix")
 
                 result = await lily.run({
                     "type": "fix_code",
@@ -62,17 +60,15 @@ class Fixer(Agent):
 
             except Exception as e:
                 print(f"[Fixer] Lily failed: {e}")
-
         else:
-            print("[Fixer] Lily not available → fallback")
-
-            # Minimal fallback
+            print("[Fixer] Lily not available → using minimal fallback")
+            # Minimal fallback for empty files
             for path in files:
                 if not files[path].strip():
                     fixed_files[path] = "def placeholder():\n    return None\n"
 
         # -------------------------------------------------
-        # SEND BACK TO TESTER
+        # SEND FIXED CODE BACK TO TESTER
         # -------------------------------------------------
         await self.bus.publish(
             Message(
@@ -88,9 +84,9 @@ class Fixer(Agent):
         )
 
     # -------------------------------------------------
-    # APPROVAL
+    # APPROVAL HELPER
     # -------------------------------------------------
-    async def _approve(self, files, task):
+    async def _approve(self, files: Dict[str, str], task: str):
         await self.bus.publish(
             Message(
                 sender=self.name,
