@@ -1,5 +1,3 @@
-# forge/agents/assembler.py
-
 import os
 import datetime
 import shutil
@@ -12,36 +10,36 @@ from ..core.message import Message
 class Assembler(Agent):
     """
     Final pipeline stage: Assembles approved code into a proper project folder.
-
-    Responsibilities:
-    - Writes all received files (supports subdirectories)
-    - Copies files from a template directory (if available)
-    - Generates a helpful README.md
-    - Creates unique timestamped project folders
+    Then zips it and provides a download link.
     """
 
     OUTPUT_BASE_DIR = "generated_apps"
     TEMPLATE_DIR_BASE = "forge/templates"
 
-    def __init__(self, name: str, bus: Any, context: dict) -> None:
-        super().__init__(name=name, bus=bus, context=context)
-        # Make this dynamic later via payload or config
-        self.template_type = "default"
+    def __init__(self, runtime):
+        # Updated constructor to match new Arena style
+        self.runtime = runtime
+        self.bus = runtime.bus
+        self.name = "assembler"
+        self.template_type = "default"   # Make this dynamic later if needed
+
+        # Subscribe to CODE_APPROVED
+        self.bus.subscribe("CODE_APPROVED", self.on_code_approved)
 
     def register(self) -> None:
-        print("[Assembler] Subscribing to CODE_APPROVED")
-        self.bus.subscribe("CODE_APPROVED", self.handle)
+        print("[Assembler] Subscribed to CODE_APPROVED")
 
-    async def handle(self, message: Message) -> None:
+    async def on_code_approved(self, message: Message) -> None:
         if message.message_type != "CODE_APPROVED":
             return
 
-        print("[Assembler] Received CODE_APPROVED")
+        print("[Assembler] Received CODE_APPROVED → Starting final assembly")
 
         payload = message.payload or {}
 
         files: Dict[str, str] = payload.get("files", {})
         task: str = payload.get("task", "generated_app").strip()
+        user_id: str = payload.get("user_id", "unknown")
 
         if not files:
             print("[Assembler] No files received → build skipped")
@@ -65,20 +63,62 @@ class Assembler(Agent):
         os.makedirs(project_dir, exist_ok=True)
         print(f"[Assembler] Creating project: {project_dir}")
 
-        # 1. Write generated files
+        # 1. Write all generated files (with subdirectory support)
         self._write_files(project_dir, files)
 
         # 2. Copy template files (gitignore, requirements.txt, etc.)
         self._copy_template_files(project_dir)
 
-        # 3. Generate README
+        # 3. Generate helpful README
         self._generate_readme(project_dir, task)
 
-        print("\n" + "=" * 45)
-        print(" BUILD COMPLETE ".center(45))
-        print(f" Project  : {project_name}")
-        print(f" Location : {project_dir}")
-        print("=" * 45 + "\n")
+        print("\n" + "=" * 50)
+        print(" BUILD COMPLETE ".center(50))
+        print(f" Project     : {project_name}")
+        print(f" Location    : {project_dir}")
+        print("=" * 50 + "\n")
+
+        # 🔥 ZIP THE PROJECT
+        try:
+            zip_base = os.path.join(self.OUTPUT_BASE_DIR, project_name)
+            zip_path = shutil.make_archive(zip_base, 'zip', project_dir)
+
+            download_url = f"/download/{project_name}"
+
+            print(f"[Assembler] Project zipped successfully → {zip_path}")
+            print(f"[Assembler] Download URL: {download_url}")
+
+            # 🔥 PUBLISH FINAL EVENT SO FRONTEND CAN SHOW DOWNLOAD LINK
+            await self.bus.publish(
+                Message(
+                    sender=self.name,
+                    recipient="arena",           # or directly to frontend via event
+                    message_type="forge_complete",
+                    payload={
+                        "status": "success",
+                        "message": f"✅ Project '{project_name}' is ready!",
+                        "project_name": project_name,
+                        "download_url": download_url,
+                        "project_path": project_dir,
+                        "user_id": user_id,
+                    }
+                )
+            )
+
+        except Exception as e:
+            print(f"[Assembler] Failed to create zip: {e}")
+            await self.bus.publish(
+                Message(
+                    sender=self.name,
+                    recipient="arena",
+                    message_type="forge_complete",
+                    payload={
+                        "status": "error",
+                        "message": "Failed to package project",
+                        "user_id": user_id,
+                    }
+                )
+            )
 
     def _write_files(self, project_dir: str, files: Dict[str, str]) -> None:
         """Write all files from the payload, creating subdirectories as needed."""
@@ -124,27 +164,27 @@ class Assembler(Agent):
         """Generate a helpful README.md"""
         readme_path = os.path.join(project_dir, "README.md")
 
-        content = f"""# {task}
+        content = f"""# {task.title()}
 
-Generated by **Forge** on {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Generated by **NOX Forge** on {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 ## Overview
-This project was automatically generated from the following task:
+This project was automatically generated from the task:
 
 **{task}**
 
 ## How to Run
 
 ```bash
-# 1. Go to the project directory
-cd "{os.path.basename(project_dir)}"
+# 1. Navigate to the project directory
+cd {os.path.basename(project_dir)}
 
 # 2. Create and activate virtual environment (recommended)
 python -m venv .venv
 source .venv/bin/activate          # Linux / macOS
 # .venv\\Scripts\\activate        # Windows
 
-# 3. Install dependencies (if requirements.txt exists)
+# 3. Install dependencies
 pip install -r requirements.txt
 
 # 4. Run the application
