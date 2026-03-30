@@ -10,6 +10,7 @@ from groq import AsyncGroq
 from pydantic import BaseModel
 
 from ..core.agent import Agent
+from ..core.message import Message
 
 
 # ────────────────────────────────────────────────
@@ -22,7 +23,7 @@ class GeneratedProject(BaseModel):
 
 class Coder(Agent):
     """
-    Coder Agent (DICT EVENT VERSION)
+    Coder Agent (MESSAGE VERSION)
 
     • Receives PLAN_CREATED
     • Generates project files via LLM
@@ -31,12 +32,19 @@ class Coder(Agent):
 
     MODEL = "llama-3.3-70b-versatile"
 
-    def __init__(self, bus: Any, context: dict):
-        super().__init__(name="coder", bus=bus, context=context)
+    def __init__(self, runtime):
+        super().__init__(
+            name="coder",
+            bus=runtime.bus,
+            context={}
+        )
 
+        self.runtime = runtime
+
+        # ✅ Proper Groq client setup
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            raise ValueError("GROQ_API_KEY not found in environment")
+            raise ValueError("GROQ_API_KEY not found")
 
         self.client = AsyncGroq(api_key=api_key)
 
@@ -46,11 +54,11 @@ class Coder(Agent):
         self.bus.subscribe("PLAN_CREATED", self.handle)
 
     # ─────────────────────────────────────────────
-    async def handle(self, message: dict) -> None:
-        if message.get("type") != "PLAN_CREATED":
+    async def handle(self, message: Message) -> None:
+        if message.message_type != "PLAN_CREATED":
             return
 
-        payload = message.get("payload", {})
+        payload = message.payload or {}
 
         task: str = payload.get("task", "").strip()
         plan_steps: List[str] = payload.get("plan", [])
@@ -99,17 +107,20 @@ class Coder(Agent):
             print(f"[Coder] Unexpected error: {e}")
             files = self.parse_file_blocks(raw) or self._fallback_error_files(task, str(e))
 
-        # 🔥 PUBLISH DICT EVENT
-        await self.bus.publish({
-            "type": "CODE_GENERATED",
-            "sender": self.name,
-            "payload": {
-                "files": files,
-                "task": task,
-                "template": template,
-                "user_id": user_id
-            }
-        })
+        # ✅ MESSAGE-BASED EVENT
+        await self.bus.publish(
+            Message(
+                sender=self.name,
+                recipient="tester",
+                message_type="CODE_GENERATED",
+                payload={
+                    "files": files,
+                    "task": task,
+                    "template": template,
+                    "user_id": user_id
+                }
+            )
+        )
 
         print(f"[Coder] Sent CODE_GENERATED ({len(files)} files)")
 
@@ -248,13 +259,16 @@ if __name__ == "__main__":
 
     # ─────────────────────────────────────────────
     async def _publish_error(self, reason: str, payload: Dict):
-        await self.bus.publish({
-            "type": "CODE_GENERATED",
-            "sender": self.name,
-            "payload": {
-                **payload,
-                "files": self._fallback_error_files("error", reason),
-                "error": reason,
-                "user_id": payload.get("user_id", "default_user")
-            }
-        })
+        await self.bus.publish(
+            Message(
+                sender=self.name,
+                recipient="tester",
+                message_type="CODE_GENERATED",
+                payload={
+                    **payload,
+                    "files": self._fallback_error_files("error", reason),
+                    "error": reason,
+                    "user_id": payload.get("user_id", "default_user")
+                }
+            )
+        )

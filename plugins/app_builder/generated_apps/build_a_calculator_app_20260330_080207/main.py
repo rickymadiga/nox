@@ -29,6 +29,7 @@ class Calculator:
     def get_history(self):
         return self.history
 
+
 def main():
     st.title('Calculator App')
     calc = Calculator()

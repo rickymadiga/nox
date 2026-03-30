@@ -1,29 +1,28 @@
 # forge/agents/planner.py
 
-from typing import List
+from typing import List, Any
 
-from ..agents.base_agent import BaseAgent
+from ..core.agent import Agent
+from ..core.message import Message
 
 
-class PlannerAgent(BaseAgent):
+class PlannerAgent(Agent):
     """
-    Planner agent (DICT EVENT VERSION)
-
-    - Receives TASK_REQUEST
-    - Selects template
-    - Builds simple plan
-    - Publishes PLAN_CREATED
+    Planner agent - now strictly using Message objects
     """
 
-    def __init__(self, bus, context):
-        super().__init__(name="planner", bus=bus, context=context)
+    def __init__(self, runtime):
+        super().__init__(
+            name="planner",
+            bus=runtime.bus,
+            context={}
+        )
+        self.runtime = runtime
 
-    # ─────────────────────────────────────────────
     def register(self) -> None:
         print("[Planner] Subscribing → TASK_REQUEST")
         self.bus.subscribe("TASK_REQUEST", self.handle)
 
-    # ─────────────────────────────────────────────
     def _detect_template(self, task: str) -> str:
         task_lower = task.lower().strip()
 
@@ -38,12 +37,11 @@ class PlannerAgent(BaseAgent):
 
         return "cli"
 
-    # ─────────────────────────────────────────────
-    async def handle(self, message: dict) -> None:
-        if message.get("type") != "TASK_REQUEST":
+    async def handle(self, message: Message) -> None:
+        if message.message_type != "TASK_REQUEST":
             return
 
-        payload = message.get("payload", {})
+        payload = message.payload or {}
 
         task: str = payload.get("task", "").strip()
         user_id: str = payload.get("user_id", "default_user")
@@ -67,16 +65,18 @@ class PlannerAgent(BaseAgent):
         if template != "cli":
             plan.insert(2, f"Set up {template} application skeleton")
 
-        # 🔥 PUBLISH DICT EVENT
-        await self.bus.publish({
-            "type": "PLAN_CREATED",
-            "sender": self.name,
-            "payload": {
-                "task": task,
-                "template": template,
-                "plan": plan,
-                "user_id": user_id
-            }
-        })
+        await self.bus.publish(
+            Message(
+                sender=self.name,
+                recipient="coder",
+                message_type="PLAN_CREATED",
+                payload={
+                    "task": task,
+                    "template": template,
+                    "plan": plan,
+                    "user_id": user_id
+                }
+            )
+        )
 
         print("[Planner] PLAN_CREATED published")
