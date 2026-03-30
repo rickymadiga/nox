@@ -1,18 +1,23 @@
 import py_compile
 import tempfile
 import os
-from typing import Any, Dict
+from typing import Dict
 
 from ..core.agent import Agent
-from ..core.message import Message
 
 
 class Tester(Agent):
 
+    def __init__(self, bus, context):
+        super().__init__(name="tester", bus=bus, context=context)
+
+    # ─────────────────────────────────────────────
     def register(self) -> None:
+        print("[Tester] Subscribed → CODE_GENERATED, CODE_FIXED")
         self.bus.subscribe("CODE_GENERATED", self.handle)
         self.bus.subscribe("CODE_FIXED", self.handle)
 
+    # ─────────────────────────────────────────────
     def classify_error(self, stderr: str):
 
         if not stderr:
@@ -31,13 +36,18 @@ class Tester(Agent):
 
         return "runtime_error"
 
-    async def handle(self, message: Message):
+    # ─────────────────────────────────────────────
+    async def handle(self, message: dict):
 
-        payload = message.payload or {}
+        if message.get("type") not in ["CODE_GENERATED", "CODE_FIXED"]:
+            return
 
-        files = payload.get("files", {})
-        task = payload.get("task", "")
-        attempts = payload.get("fix_attempts", 0)
+        payload = message.get("payload", {})
+
+        files: Dict[str, str] = payload.get("files", {})
+        task: str = payload.get("task", "")
+        attempts: int = payload.get("fix_attempts", 0)
+        user_id: str = payload.get("user_id", "default_user")
 
         print(f"[Tester] Running test (attempt {attempts})")
 
@@ -47,13 +57,15 @@ class Tester(Agent):
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
 
+                # Write files
                 for path, code in files.items():
                     full = os.path.join(tmpdir, path)
                     os.makedirs(os.path.dirname(full), exist_ok=True)
 
-                    with open(full, "w") as f:
+                    with open(full, "w", encoding="utf-8") as f:
                         f.write(code)
 
+                # Compile Python files
                 for path in files:
                     if path.endswith(".py"):
                         py_compile.compile(
@@ -70,18 +82,17 @@ class Tester(Agent):
 
         print(f"[Tester] {'PASSED' if passed else 'FAILED'} → {error_type}")
 
-        await self.bus.publish(
-            Message(
-                sender=self.name,
-                recipient="reviewer",
-                message_type="TEST_RESULTS",
-                payload={
-                    "files": files,
-                    "task": task,
-                    "passed": passed,
-                    "stderr": stderr,
-                    "error_type": error_type,
-                    "fix_attempts": attempts,
-                },
-            )
-        )
+        # 🔥 PUBLISH DICT EVENT
+        await self.bus.publish({
+            "type": "TEST_RESULTS",
+            "sender": self.name,
+            "payload": {
+                "files": files,
+                "task": task,
+                "passed": passed,
+                "stderr": stderr,
+                "error_type": error_type,
+                "fix_attempts": attempts,
+                "user_id": user_id
+            }
+        })

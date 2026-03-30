@@ -11,51 +11,38 @@ class EventBus:
     # -----------------------------
     # Subscribe
     # -----------------------------
-    def subscribe(self, event_type: str, handler: Callable):
+    def subscribe(self, event_type, handler):
+     if event_type not in self.subscribers:
+        self.subscribers[event_type] = []
 
-        self.subscribers.setdefault(event_type, []).append(handler)
-
-        agent = getattr(handler.__self__, "name", "unknown")
-
-        print(f"[EventBus] {agent} subscribed → {event_type}")
+        self.subscribers[event_type].append(handler)
+        print(f"[EventBus] subscribed → {event_type}")
 
     # -----------------------------
     # Publish
     # -----------------------------
-    async def publish(self, message: Any):
+    
+    async def publish(self, message):
 
-        if not hasattr(message, "message_type"):
-            print("[EventBus] Dropped message (no message_type)")
-            return
+    # 🔥 SUPPORT BOTH dict + old Message (safety)
+     if isinstance(message, dict):
+        message_type = message.get("type")
+     else:
+        message_type = getattr(message, "message_type", None)
 
-        msg_type = message.message_type
-        sender = getattr(message, "sender", "unknown")
-        recipient = getattr(message, "recipient", None)
+     if not message_type:
+        print("[EventBus] Dropped message (no message_type)")
+        return
 
-        handlers = self.subscribers.get(msg_type, [])
+     handlers = self.subscribers.get(message_type, [])
 
-        print(
-            f"[EventBus] {msg_type} | from={sender} | "
-            f"handlers={len(handlers)} | to={recipient}"
-        )
+     print(f"[EventBus] {message_type} | handlers={len(handlers)}")
 
-        if not handlers:
-            return
-
-        tasks = []
-
-        for handler in handlers:
-
-            agent = getattr(handler.__self__, "name", None)
-
-            # ✅ STRICT ROUTING (your architecture)
-            if recipient and recipient != agent:
-                continue
-
-            tasks.append(self._safe_execute(handler, message, agent))
-
-        if tasks:
-            await asyncio.gather(*tasks)
+     for handler in handlers:
+        try:
+            await handler(message)
+        except Exception as e:
+            print(f"[EventBus ERROR] {e}")
 
     # -----------------------------
     # Safe execution

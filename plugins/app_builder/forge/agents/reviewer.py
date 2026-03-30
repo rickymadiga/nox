@@ -1,28 +1,30 @@
-from typing import Any, Dict
+from typing import Dict
 
 from ..core.agent import Agent
-from ..core.message import Message
 
 
 class Reviewer(Agent):
 
+    def __init__(self, bus, context):
+        super().__init__(name="reviewer", bus=bus, context=context)
+
+    # ─────────────────────────────────────────────
     def register(self) -> None:
+        print("[Reviewer] Subscribed → TEST_RESULTS")
         self.bus.subscribe("TEST_RESULTS", self.handle)
 
-    async def handle(self, message: Message) -> None:
-
-        if message.message_type != "TEST_RESULTS":
+    # ─────────────────────────────────────────────
+    async def handle(self, message: dict) -> None:
+        if message.get("type") != "TEST_RESULTS":
             return
 
-        payload = message.payload or {}
+        payload = message.get("payload", {})
 
-        print("[Reviewer] Passive analysis only")
+        print("[Reviewer] Passive analysis → forwarding to Debugger")
 
-        await self.bus.publish(
-            Message(
-                sender=self.name,
-                recipient="debugger",   # ✅ ALWAYS debugger
-                message_type="REVIEW_COMPLETED",
-                payload=payload,
-            )
-        )
+        # 🔥 Forward to Debugger (broadcast style)
+        await self.bus.publish({
+            "type": "REVIEW_COMPLETED",
+            "sender": self.name,
+            "payload": payload
+        })

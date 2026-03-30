@@ -2,28 +2,29 @@
 
 from typing import List
 
-from ..agents.base_agent import BaseAgent    # assuming this is your correct base
-from ..core.message import Message
+from ..agents.base_agent import BaseAgent
 
 
 class PlannerAgent(BaseAgent):
     """
-    Planner agent:
+    Planner agent (DICT EVENT VERSION)
+
     - Receives TASK_REQUEST
-    - Chooses a basic template type (cli / fastapi / streamlit)
-    - Creates a very simple fixed plan
-    - Publishes PLAN_CREATED to coder
+    - Selects template
+    - Builds simple plan
+    - Publishes PLAN_CREATED
     """
 
+    def __init__(self, bus, context):
+        super().__init__(name="planner", bus=bus, context=context)
+
+    # ─────────────────────────────────────────────
     def register(self) -> None:
-        print("[Planner] Subscribing to TASK_REQUEST")
+        print("[Planner] Subscribing → TASK_REQUEST")
         self.bus.subscribe("TASK_REQUEST", self.handle)
 
+    # ─────────────────────────────────────────────
     def _detect_template(self, task: str) -> str:
-        """
-        Very simple keyword-based template selector.
-        Returns one of: 'cli', 'fastapi', 'streamlit'
-        """
         task_lower = task.lower().strip()
 
         if not task_lower:
@@ -35,18 +36,20 @@ class PlannerAgent(BaseAgent):
         if any(word in task_lower for word in ["dashboard", "data app", "streamlit", "ui", "web app", "visualization"]):
             return "streamlit"
 
-        # default
         return "cli"
 
-    async def handle(self, message: Message) -> None:
-        if message.message_type != "TASK_REQUEST":
+    # ─────────────────────────────────────────────
+    async def handle(self, message: dict) -> None:
+        if message.get("type") != "TASK_REQUEST":
             return
 
-        payload = message.payload or {}
+        payload = message.get("payload", {})
+
         task: str = payload.get("task", "").strip()
+        user_id: str = payload.get("user_id", "default_user")
 
         if not task:
-            print("[Planner] Received empty task → skipping")
+            print("[Planner] Empty task → skipping")
             return
 
         print(f"[Planner] Received task: {task}")
@@ -54,29 +57,26 @@ class PlannerAgent(BaseAgent):
         template = self._detect_template(task)
         print(f"[Planner] Selected template: {template}")
 
-        # Very basic fixed plan (same logic as original)
         plan: List[str] = [
             "Understand the task requirements",
             "Design the overall program structure",
             "Implement core functionality",
-            "Ensure proper entry point (if __name__ == '__main__') exists"
+            "Ensure proper entry point exists"
         ]
 
-        # Optional: could enrich plan depending on template in the future
         if template != "cli":
             plan.insert(2, f"Set up {template} application skeleton")
 
-        await self.bus.publish(
-            Message(
-                sender=self.name,
-                recipient="coder",
-                message_type="PLAN_CREATED",
-                payload={
-                    "task": task,
-                    "template": template,           # added — useful for coder later
-                    "plan": plan
-                }
-            )
-        )
+        # 🔥 PUBLISH DICT EVENT
+        await self.bus.publish({
+            "type": "PLAN_CREATED",
+            "sender": self.name,
+            "payload": {
+                "task": task,
+                "template": template,
+                "plan": plan,
+                "user_id": user_id
+            }
+        })
 
         print("[Planner] PLAN_CREATED published")
