@@ -2,6 +2,8 @@ import asyncio
 from typing import Final
 
 from ..core.event_bus import EventBus
+from ..core.message import Message
+
 
 # Agents
 from ..agents.planner import PlannerAgent
@@ -49,7 +51,7 @@ async def create_and_register_agents(runtime: Runtime):
     for agent_class, name in AGENTS:
         try:
             # 🔥 NEW STANDARD
-            agent = agent_class(runtime.bus, runtime)
+            agent = agent_class(runtime)
 
             runtime.register_agent(name, agent)
 
@@ -69,14 +71,17 @@ async def run_task_pipeline(runtime: Runtime, task: str):
     print(f"[Arena] → Publishing task: '{task}'")
 
     # 🔥 DICT EVENT (NOT Message)
-    await runtime.bus.publish({
-        "type": "TASK_REQUEST",
-        "sender": "arena",
-        "payload": {
-            "task": task.strip(),
+    await runtime.bus.publish(
+    Message(
+        sender="arena",
+        recipient="planner",
+        message_type="TASK_REQUEST",
+        payload={
+            "task": task,
             "user_id": "default_user"
         }
-    })
+    )
+)
 
     print(f"[Arena] Waiting {INITIAL_WAIT_AFTER_TASK:.1f}s...\n")
     await asyncio.sleep(INITIAL_WAIT_AFTER_TASK)

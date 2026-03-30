@@ -1,4 +1,5 @@
 import os
+import io
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
@@ -33,6 +34,10 @@ security = HTTPBearer()
 # GLOBAL INSTANCES
 # ────────────────────────────────────────────────
 runtime = engine.runtime
+
+# Initialize last_zip storage for in-memory download support
+if not hasattr(runtime, "last_zip"):
+    runtime.last_zip = None
 
 # ────────────────────────────────────────────────
 # TEMP USER STORE (Replace with real DB later)
@@ -137,20 +142,38 @@ async def root():
 
 
 # ────────────────────────────────────────────────
-# DOWNLOAD ENDPOINT (Newly Added)
+# DOWNLOAD ENDPOINTS
 # ────────────────────────────────────────────────
+
 @app.get("/download/{project}")
 def download_project(project: str):
-    """Download generated project as ZIP"""
+    """Download generated project as ZIP file from disk"""
     zip_path = f"generated_apps/{project}.zip"
 
     if not os.path.exists(zip_path):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="Project file not found")
 
     return FileResponse(
         zip_path,
         media_type="application/zip",
         filename=f"{project}.zip"
+    )
+
+
+@app.get("/download/latest")
+async def download_latest():
+    """Download the most recently generated project as bytes (for Streamlit st.download_button)"""
+    if not hasattr(runtime, "last_zip") or runtime.last_zip is None:
+        raise HTTPException(status_code=404, detail="No recent project available")
+
+    data = runtime.last_zip
+
+    return StreamingResponse(
+        io.BytesIO(data["bytes"]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={data['filename']}"
+        }
     )
 
 
@@ -194,7 +217,6 @@ async def chat(
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
 
-        # Your exact logic preserved
         result = await engine.handle_prompt(prompt, user_id=user)
 
         return result

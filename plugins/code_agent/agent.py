@@ -69,12 +69,28 @@ class CodeAgent:
 
     # ─────────────────────────────
     def on_complete(self, message):
-        data = self._extract(message)
+      try:
+        payload = message.get("payload", message)
 
-        user_id = data.get("user_id", "default_user")
-        download = data.get("download_url") or "No download link"
+        user_id = payload.get("user_id", "default_user")
+        filename = payload.get("filename", "project.zip")
+        zip_bytes = payload.get("zip_bytes")
 
-        log = f"✅ {data.get('message', '')}\n📦 {download}"
+        if not zip_bytes:
+            self._push(user_id, "❌ No file received")
+            return
 
-        print(log)
+        # 🔥 Store latest result for download
+        self.runtime.last_zip = {
+            "bytes": zip_bytes,
+            "filename": filename,
+            "user_id": user_id,
+        }
+
+        log = f"✅ Project ready!\n📦 {filename}"
+        print("[CodeAgent]", log)
+
         self._push(user_id, log)
+
+      except Exception as e:
+        print("[CodeAgent ERROR]", e)

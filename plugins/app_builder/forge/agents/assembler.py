@@ -1,40 +1,46 @@
 import os
 import datetime
 import shutil
+import io
+import zipfile
 from typing import Dict
 
+from ..core.agent import Agent
+from ..core.message import Message
 
-class Assembler:
+
+class Assembler(Agent):
     """
     Final pipeline stage: Assembles approved code into a proper project folder,
-    zips it, and emits a download link.
+    creates both on-disk zip and in-memory zip bytes, then emits download info.
     """
 
     OUTPUT_BASE_DIR = "generated_apps"
     TEMPLATE_DIR_BASE = "forge/templates"
 
-    def __init__(self, bus, context):
-        self.bus = bus
-        self.context = context
+    def __init__(self, runtime):
+        # Updated to match new runtime style
+        self.runtime = runtime
+        self.bus = runtime.bus
         self.name = "assembler"
         self.template_type = "default"
 
-        # Subscribe to CODE_APPROVED event
+        # Subscribe to CODE_APPROVED
         self.bus.subscribe("CODE_APPROVED", self.on_code_approved)
 
-        print("[Assembler] Subscribed to CODE_APPROVED")
+        print("[Assembler] Initialized and subscribed to CODE_APPROVED")
 
     def register(self) -> None:
         print("[Assembler] Registered")
 
     # ─────────────────────────────────────────────
-    async def on_code_approved(self, message: dict) -> None:
-        if message.get("type") != "CODE_APPROVED":
+    async def on_code_approved(self, message: Message) -> None:
+        if message.message_type != "CODE_APPROVED":
             return
 
         print("[Assembler] Received CODE_APPROVED → Starting final assembly")
 
-        payload = message.get("payload", {})
+        payload = message.payload or {}
 
         files: Dict[str, str] = payload.get("files", {})
         task: str = payload.get("task", "generated_app").strip()
@@ -45,7 +51,7 @@ class Assembler:
             return
 
         # ─────────────────────────────────────────
-        # Create project directory
+        # Create unique project directory
         safe_task = (
             task.lower()
             .replace(" ", "_")
@@ -62,11 +68,10 @@ class Assembler:
 
         print(f"[Assembler] Creating project: {project_dir}")
 
-        # ─────────────────────────────────────────
         # 1. Write generated files
         self._write_files(project_dir, files)
 
-        # 2. Copy templates
+        # 2. Copy template files
         self._copy_template_files(project_dir)
 
         # 3. Generate README
@@ -79,42 +84,81 @@ class Assembler:
         print("=" * 50 + "\n")
 
         # ─────────────────────────────────────────
-        # ZIP PROJECT
+        # ZIP PROJECT - BULLETPROOF VERSION
         try:
-            zip_base = os.path.join(self.OUTPUT_BASE_DIR, project_name)
-            zip_path = shutil.make_archive(zip_base, 'zip', project_dir)
+            print(f"[Assembler] Creating ZIP packages for {project_name}...")
 
+            # 1. On-disk ZIP (reliable)
+            zip_base = os.path.join(self.OUTPUT_BASE_DIR, project_name)
+            zip_path = shutil.make_archive(zip_base, 'zip', root_dir=project_dir)
             download_url = f"/download/{project_name}"
 
-            print(f"[Assembler] Project zipped → {zip_path}")
-            print(f"[Assembler] Download URL: {download_url}")
+            print(f"[Assembler] On-disk ZIP created → {zip_path}")
 
-            # Emit success event
-            await self.bus.publish({
-                "type": "forge_complete",
-                "sender": self.name,
-                "payload": {
-                    "status": "success",
-                    "message": f"✅ Project '{project_name}' is ready!",
-                    "project_name": project_name,
-                    "download_url": download_url,
-                    "project_path": project_dir,
-                    "user_id": user_id,
-                }
-            })
+            # 2. In-memory ZIP - Bulletproof
+            zip_buffer = io.BytesIO()
+
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root, dirs, files_in_dir in os.walk(project_dir):
+                    for filename in files_in_dir:
+                        full_path = os.path.join(root, filename)
+
+                        if not os.path.isfile(full_path):
+                            continue
+
+                        # Correct relative path for the zip
+                        arcname = os.path.relpath(full_path, project_dir)
+
+                        print(f"[Assembler] Adding to ZIP: {arcname}")  # Debug - you can remove later
+
+                        try:
+                            zf.write(full_path, arcname)
+                        except Exception as e:
+                            print(f"[Assembler] Failed to add {arcname}: {e}")
+
+            zip_buffer.seek(0)
+            zip_bytes = zip_buffer.getvalue()   # ← Use getvalue(), not read()
+
+            print(f"[Assembler] In-memory ZIP created: {len(zip_bytes)} bytes ({len(zip_bytes) // 1024} KB)")
+
+            # Store for runtime / download
+            self.runtime.last_zip = {
+                "bytes": zip_bytes,
+                "filename": f"{project_name}.zip"
+            }
+
+            # Publish completion
+            await self.bus.publish(
+                Message(
+                    sender=self.name,
+                    recipient="arena",
+                    message_type="forge_complete",
+                    payload={
+                        "status": "success",
+                        "message": f"✅ Project '{project_name}' is ready!",
+                        "project_name": project_name,
+                        "download_url": download_url,
+                        "zip_bytes": zip_bytes,
+                        "filename": f"{project_name}.zip",
+                        "user_id": user_id,
+                    }
+                )
+            )
 
         except Exception as e:
-            print(f"[Assembler] ZIP failed: {e}")
-
-            await self.bus.publish({
-                "type": "forge_complete",
-                "sender": self.name,
-                "payload": {
-                    "status": "error",
-                    "message": "Failed to package project",
-                    "user_id": user_id,
-                }
-            })
+            print(f"[Assembler] ZIP creation failed: {e}")
+            await self.bus.publish(
+                Message(
+                    sender=self.name,
+                    recipient="arena",
+                    message_type="forge_complete",
+                    payload={
+                        "status": "error",
+                        "message": f"Failed to package project: {e}",
+                        "user_id": user_id,
+                    }
+                )
+            )
 
     # ─────────────────────────────────────────────
     def _write_files(self, project_dir: str, files: Dict[str, str]) -> None:
