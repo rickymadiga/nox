@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import stripe
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -112,6 +112,9 @@ load_plugins(runtime)
 os.makedirs("exports", exist_ok=True)
 app.mount("/exports", StaticFiles(directory="exports"), name="exports")
 
+# Create generated_apps directory for downloads
+os.makedirs("generated_apps", exist_ok=True)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -131,6 +134,24 @@ async def root():
         "status": "running",
         "version": "3.0"
     }
+
+
+# ────────────────────────────────────────────────
+# DOWNLOAD ENDPOINT (Newly Added)
+# ────────────────────────────────────────────────
+@app.get("/download/{project}")
+def download_project(project: str):
+    """Download generated project as ZIP"""
+    zip_path = f"generated_apps/{project}.zip"
+
+    if not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"{project}.zip"
+    )
 
 
 # ────────────────────────────────────────────────
@@ -160,12 +181,12 @@ async def login(data: AuthRequest):
 
 
 # ────────────────────────────────────────────────
-# CHAT (Your exact logic preserved)
+# CHAT ENDPOINT
 # ────────────────────────────────────────────────
 @app.post("/chat")
 async def chat(
     data: dict,
-    user: str = Depends(get_current_user)   # 👈 username from token
+    user: str = Depends(get_current_user)
 ):
     try:
         prompt = data.get("prompt", "").strip()
@@ -173,8 +194,8 @@ async def chat(
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
 
-        # Your exact logic:
-        result = await engine.handle_prompt(prompt)
+        # Your exact logic preserved
+        result = await engine.handle_prompt(prompt, user_id=user)
 
         return result
 
@@ -256,7 +277,7 @@ async def checkout(data: dict, user: str = Depends(get_current_user)):
             },
             "quantity": 1,
         }],
-        success_url="https://your-frontend-url?success=true",   # ← Update in prod
+        success_url="https://your-frontend-url?success=true",
         cancel_url="https://your-frontend-url?cancel=true",
         metadata={"user_id": user, "plan": plan}
     )

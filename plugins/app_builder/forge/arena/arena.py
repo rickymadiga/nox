@@ -5,8 +5,9 @@ from ..core.event_bus import EventBus
 from ..core.message import Message
 from ..memory.memory import Memory
 
+# Import your agents (updated class names where needed)
 from ..agents.planner import PlannerAgent
-from ..agents.coder import Coder
+from ..agents.coder import Coder          # assuming class is Coder
 from ..agents.tester import Tester
 from ..agents.reviewer import Reviewer
 from ..agents.debugger import Debugger
@@ -27,34 +28,49 @@ AGENTS = [
 INITIAL_WAIT_AFTER_TASK: Final[float] = 8.0
 
 
-# ✅ Clean Runtime
+# ✅ Updated Runtime with register_agent support
 class Runtime:
     def __init__(self, bus):
         self.bus = bus
-        self.agents = []
+        self.agents: dict = {}       # Now using dict for faster lookup
         self.memory = None
 
+    def register_agent(self, name: str, agent: any) -> None:
+        """Register agent properly"""
+        if hasattr(agent, "runtime"):
+            agent.runtime = self
+        self.agents[name] = agent
+        print(f"[Runtime] Registered agent: {name}")
+
     def get_agent(self, name: str):
-        for agent in self.agents:
-            if getattr(agent, "name", None) == name:
-                return agent
-        return None
+        """Get agent by name"""
+        return self.agents.get(name)
+
+    def get_all_agents(self):
+        return self.agents
 
 
 async def create_and_register_agents(runtime: Runtime) -> None:
-    """Register all agents into the runtime"""
+    """Create and register all agents using the new style"""
     print("[Arena] Creating and registering agents...\n")
 
-    runtime.agents.clear()   # Clean slate
+    # Clear previous agents if any
+    runtime.agents.clear()
 
     for agent_class, name in AGENTS:
         try:
-            agent = agent_class(name, runtime.bus, runtime)
-            agent.runtime = runtime
-            agent.register()
+            # 🔥 New way: pass runtime directly to agent constructor
+            agent = agent_class(runtime)          # This matches your requested style
 
-            runtime.agents.append(agent)
-            print(f"[Arena] {name.capitalize()} registered")
+            # Register using the proper method
+            runtime.register_agent(name, agent)
+
+            # Also call agent's register() if it exists
+            if hasattr(agent, "register") and callable(agent.register):
+                agent.register()
+
+            print(f"[Arena] {name.capitalize()} registered successfully")
+
         except Exception as e:
             print(f"[Arena] Failed to register {name}: {e}")
 
@@ -92,10 +108,10 @@ async def run_forge(task: str, runtime: Runtime | None = None):
     runtime.bus = bus
     runtime.memory = Memory("memory", bus, runtime)
 
-    # Register all agents
+    # Register all agents using the new method
     await create_and_register_agents(runtime)
 
-    # Run the actual task
+    # Run the actual task pipeline
     await run_task_pipeline(runtime, task)
 
     return {

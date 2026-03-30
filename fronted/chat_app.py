@@ -5,7 +5,7 @@ import json
 # ────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────
-BACKEND_URL = "https://nox-ui84.onrender.com"  # 🔥 CHANGE THIS
+BACKEND_URL = "https://nox-ui84.onrender.com"  # 🔥 CHANGE THIS IN PRODUCTION
 
 st.set_page_config(
     page_title="NOX SMART WORLD",
@@ -27,6 +27,11 @@ st.markdown("""
         background-color: #1a202c !important;
         border-radius: 12px;
         border-left: 4px solid #f6ad55;
+    }
+    .download-link {
+        color: #f6ad55;
+        font-weight: bold;
+        text-decoration: underline;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -94,7 +99,6 @@ def login():
             f"{BACKEND_URL}/login",
             json={"username": username, "password": password}
         )
-
         data = safe_json(res)
         if not data:
             return
@@ -117,13 +121,10 @@ def signup():
             f"{BACKEND_URL}/signup",
             json={"username": username, "password": password}
         )
-
         data = safe_json(res)
         if not data:
-             return
-
+            return
         st.success("✅ Account created! Please login.")
-
     except Exception as e:
         st.error(f"Signup error: {str(e)}")
 
@@ -152,13 +153,10 @@ def fetch_credits():
             f"{BACKEND_URL}/credits/{st.session_state.user_id}",
             headers={"Authorization": f"Bearer {st.session_state.token}"}
         )
-
         data = safe_json(res, show_error=False)
         if not data:
             return st.session_state.credits
-
         return data.get("credits", 0)
-
     except:
         return st.session_state.credits
 
@@ -171,12 +169,26 @@ st.session_state.credits = fetch_credits()
 st.caption(f"👤 **{st.session_state.user_id}** | 💰 **{st.session_state.credits}** credits")
 
 # ────────────────────────────────────────────────
-# CHAT HISTORY
+# CHAT HISTORY WITH DOWNLOAD SUPPORT
 # ────────────────────────────────────────────────
 for role, content in st.session_state.messages:
     avatar = "🙂" if role == "user" else "🤖"
     with st.chat_message(role, avatar=avatar):
-        st.markdown(content)
+        if role == "assistant" and "/download/" in content:
+            # Handle download link rendering
+            parts = content.split("📦 ")
+            if len(parts) > 1:
+                download_part = parts[1]
+                if "/download/" in download_part:
+                    link = f"{BACKEND_URL}{download_part.strip()}"
+                    st.markdown(f"📦 **Project Ready!**")
+                    st.markdown(f'<a href="{link}" target="_blank" class="download-link">⬇️ Download {download_part.split("/")[-1]}</a>', unsafe_allow_html=True)
+                else:
+                    st.markdown(content)
+            else:
+                st.markdown(content)
+        else:
+            st.markdown(content)
 
 # ────────────────────────────────────────────────
 # CHAT INPUT
@@ -207,7 +219,21 @@ if prompt := st.chat_input("Create with NOX..."):
                 msg = f"❌ Error: {str(e)}"
                 upsell = None
 
-        st.markdown(msg)
+        # Render message with download support
+        if "/download/" in msg:
+            parts = msg.split("📦 ")
+            if len(parts) > 1:
+                download_part = parts[1]
+                if "/download/" in download_part:
+                    link = f"{BACKEND_URL}{download_part.strip()}"
+                    st.markdown(f"📦 **Project Ready!**")
+                    st.markdown(f'<a href="{link}" target="_blank" class="download-link">⬇️ Download Project</a>', unsafe_allow_html=True)
+                else:
+                    st.markdown(msg)
+            else:
+                st.markdown(msg)
+        else:
+            st.markdown(msg)
 
     st.session_state.messages.append(("assistant", msg))
     st.session_state.last_msg = msg
@@ -233,6 +259,24 @@ if (
 
     col1, col2, col3 = st.columns(3)
 
+    def buy_plan(plan: str):
+        try:
+            res = requests.post(
+                f"{BACKEND_URL}/create-checkout-session",
+                json={"plan": plan},
+                headers={"Authorization": f"Bearer {st.session_state.token}"}
+            )
+            data = safe_json(res)
+            if not data:
+                return
+            if "url" in data:
+                st.success("Redirecting to payment...")
+                st.markdown(f'<a href="{data["url"]}" target="_blank">👉 Complete Payment</a>', unsafe_allow_html=True)
+            else:
+                st.error(data.get("error", "Payment failed"))
+        except Exception as e:
+            st.error(f"Payment error: {str(e)}")
+
     with col1:
         if st.button("Starter ($5)", key=f"starter_{len(st.session_state.messages)}"):
             buy_plan("starter")
@@ -244,35 +288,6 @@ if (
     with col3:
         if st.button("Mega ($50)", key=f"mega_{len(st.session_state.messages)}"):
             buy_plan("mega")
-
-# ────────────────────────────────────────────────
-# BUY PLAN FUNCTION
-# ────────────────────────────────────────────────
-def buy_plan(plan: str):
-    try:
-        res = requests.post(
-            f"{BACKEND_URL}/create-checkout-session",
-            json={
-                "user_id": st.session_state.user_id,
-                "plan": plan
-            }
-        )
-
-        data = safe_json(res)
-        if not data:
-            return
-
-        if "url" in data:
-            st.success("Redirecting to payment...")
-            st.markdown(
-                f'<a href="{data["url"]}" target="_blank">👉 Complete Payment</a>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.error(data.get("error", "Payment failed"))
-
-    except Exception as e:
-        st.error(f"Payment error: {str(e)}")
 
 # ────────────────────────────────────────────────
 # SIDEBAR
@@ -299,10 +314,8 @@ with st.sidebar:
         try:
             res = requests.post(
                 f"{BACKEND_URL}/toggle-auto-recharge",
-                json={
-                    "user_id": st.session_state.user_id,
-                    "enabled": toggle
-                }
+                json={"enabled": toggle},
+                headers={"Authorization": f"Bearer {st.session_state.token}"}
             )
             if res.status_code != 200:
                 st.error(res.text)
