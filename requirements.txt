@@ -6,7 +6,6 @@ sentence-transformers
 torch
 numpy
 pandas
-
 fastapi
 python-dotenv
 stripe
