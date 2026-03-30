@@ -1,52 +1,59 @@
-from typing import Any, Dict
+from typing import Dict
 
 from ..core.agent import Agent
-from ..core.message import Message
 
 
 class Fixer(Agent):
 
     MAX_ATTEMPTS = 4
 
+    def __init__(self, bus, context):
+        super().__init__(name="fixer", bus=bus, context=context)
+
+    # ─────────────────────────────────────────────
     def register(self):
         print("[Fixer] Subscribed → REVIEW_COMPLETED")
         self.bus.subscribe("REVIEW_COMPLETED", self.handle)
 
-    async def handle(self, message: Message):
-        if message.message_type != "REVIEW_COMPLETED":
+    # ─────────────────────────────────────────────
+    async def handle(self, message: dict):
+        if message.get("type") != "REVIEW_COMPLETED":
             return
 
-        payload = message.payload or {}
+        payload = message.get("payload", {})
 
         files: Dict[str, str] = payload.get("files", {})
         task: str = payload.get("task", "")
         attempts: int = payload.get("fix_attempts", 0)
         errors: list = payload.get("errors", [])
         error_type: str = payload.get("error_type", "unknown")
+        user_id: str = payload.get("user_id", "default_user")
 
         print(f"[Fixer] Attempt {attempts} | Type: {error_type}")
 
-        # ✅ STOP CONDITION - Max attempts reached
+        # ─────────────────────────────────────────
+        # STOP CONDITION
+        # ─────────────────────────────────────────
         if attempts >= self.MAX_ATTEMPTS:
-            print("[Fixer] Max attempts reached → forcing safe output")
-            await self._approve(files, task)
+            print("[Fixer] Max attempts reached → forcing approval")
+            await self._approve(files, task, user_id)
             return
 
-        # -------------------------------------------------
-        # FIX CODE USING LILY
-        # -------------------------------------------------
-        fixed_files = files.copy()  # Safe copy to avoid mutating original
+        # ─────────────────────────────────────────
+        # FIX CODE (OPTIONAL LILY)
+        # ─────────────────────────────────────────
+        fixed_files = files.copy()
 
         lily = None
-        if hasattr(self, "runtime") and self.runtime:
-            try:
-                lily = self.runtime.get_agent("lily")
-            except Exception:
-                lily = None
+        try:
+            # context acts as runtime now
+            lily = self.context.get_agent("lily") if hasattr(self.context, "get_agent") else None
+        except Exception:
+            lily = None
 
         if lily:
             try:
-                print("[Fixer] Using Lily 🧠 for fix")
+                print("[Fixer] Using Lily 🧠")
 
                 result = await lily.run({
                     "type": "fix_code",
@@ -60,41 +67,37 @@ class Fixer(Agent):
 
             except Exception as e:
                 print(f"[Fixer] Lily failed: {e}")
+
         else:
-            print("[Fixer] Lily not available → using minimal fallback")
-            # Minimal fallback for empty files
+            print("[Fixer] No Lily → fallback fix")
+
+            # simple fallback
             for path in files:
                 if not files[path].strip():
                     fixed_files[path] = "def placeholder():\n    return None\n"
 
-        # -------------------------------------------------
-        # SEND FIXED CODE BACK TO TESTER
-        # -------------------------------------------------
-        await self.bus.publish(
-            Message(
-                sender=self.name,
-                recipient="tester",
-                message_type="CODE_FIXED",
-                payload={
-                    "files": fixed_files,
-                    "task": task,
-                    "fix_attempts": attempts + 1,
-                },
-            )
-        )
+        # ─────────────────────────────────────────
+        # SEND BACK TO TESTER
+        # ─────────────────────────────────────────
+        await self.bus.publish({
+            "type": "CODE_FIXED",
+            "sender": self.name,
+            "payload": {
+                "files": fixed_files,
+                "task": task,
+                "fix_attempts": attempts + 1,
+                "user_id": user_id
+            }
+        })
 
-    # -------------------------------------------------
-    # APPROVAL HELPER
-    # -------------------------------------------------
-    async def _approve(self, files: Dict[str, str], task: str):
-        await self.bus.publish(
-            Message(
-                sender=self.name,
-                recipient="assembler",
-                message_type="CODE_APPROVED",
-                payload={
-                    "files": files,
-                    "task": task,
-                },
-            )
-        )
+    # ─────────────────────────────────────────────
+    async def _approve(self, files: Dict[str, str], task: str, user_id: str):
+        await self.bus.publish({
+            "type": "CODE_APPROVED",
+            "sender": self.name,
+            "payload": {
+                "files": files,
+                "task": task,
+                "user_id": user_id
+            }
+        })
