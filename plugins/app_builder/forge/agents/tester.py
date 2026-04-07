@@ -1,9 +1,9 @@
-# forge/agents/tester.py
+# tester.py (or forge/agents/tester.py)
 
 import py_compile
 import tempfile
 import os
-from typing import Dict
+from typing import Any, Dict
 
 from ..core.agent import Agent
 from ..core.message import Message
@@ -11,62 +11,84 @@ from ..core.message import Message
 
 class Tester(Agent):
 
-    def __init__(self, runtime):
-        super().__init__(
-            name="tester",
-            bus=runtime.bus,
-            context={}
-        )
-        self.runtime = runtime
-
     def register(self) -> None:
-        print("[Tester] Subscribed → CODE_GENERATED, CODE_FIXED")
         self.bus.subscribe("CODE_GENERATED", self.handle)
         self.bus.subscribe("CODE_FIXED", self.handle)
 
-    def classify_error(self, stderr: str) -> str:
-        if not stderr:
-            return "none"
+    # ─────────────────────────────────────────────
+    # 🧠 SMART ANALYSIS (TEMPLATE-AWARE)
+    # ─────────────────────────────────────────────
+    def analyze_code(self, files: Dict[str, str], template: str = None):
+        issues = []
 
-        s = stderr.lower()
-        if "syntaxerror" in s:
-            return "syntax_error"
-        if "no module named" in s:
-            return "missing_import"
-        if "filenotfounderror" in s:
-            return "file_missing"
-        if "timeout" in s:
-            return "timeout"
+        for path, code in files.items():
+            if not path.endswith(".py"):
+                continue
 
-        return "runtime_error"
+            # ❌ Unused pandas
+            if "import pandas" in code and "pd." not in code:
+                issues.append("Unused import: pandas")
 
+            # ───────── STREAMLIT RULES ─────────
+            if template == "streamlit":
+                if "st." not in code:
+                    issues.append("Streamlit not used properly")
+
+                # non-critical (UX improvement)
+                if "st.button" not in code:
+                    issues.append("Missing st.button trigger (non-critical)")
+
+                # ❌ should NOT exist in Streamlit apps
+                if "__name__" in code and "__main__" in code:
+                    issues.append("Remove __main__ block for Streamlit")
+
+            # ───────── FASTAPI RULES ─────────
+            elif template == "fastapi":
+                if "FastAPI" not in code and "fastapi" not in code.lower():
+                    issues.append("FastAPI not used properly")
+                if "app =" not in code.lower() and "APIRouter" not in code:
+                    issues.append("Missing FastAPI app or router")
+
+            # ───────── CLI RULES ─────────
+            elif template == "cli" or template is None:   # None = default CLI from Coder
+                if "__name__" not in code or "__main__" not in code:
+                    issues.append("Missing __main__ entry point")
+
+            # ❌ Weak error handling
+            if "return 'Error'" in code or "return \"Error\"" in code:
+                issues.append("Weak error handling")
+
+        # ❌ Missing requirements.txt
+        if "requirements.txt" not in files:
+            issues.append("Missing requirements.txt")
+
+        return issues
+
+    # ─────────────────────────────────────────────
     async def handle(self, message: Message):
-        if message.message_type not in ["CODE_GENERATED", "CODE_FIXED"]:
-            return
 
         payload = message.payload or {}
-
-        files: Dict[str, str] = payload.get("files", {})
-        task: str = payload.get("task", "")
-        attempts: int = payload.get("fix_attempts", 0)
-        user_id: str = payload.get("user_id", "default_user")
+        files = payload.get("files", {})
+        task = payload.get("task", "")
+        attempts = payload.get("fix_attempts", 0)
+        template = payload.get("template")
+        user_id = payload.get("user_id", "default_user")
 
         print(f"[Tester] Running test (attempt {attempts})")
 
         stderr = ""
-        passed = False
-        error_type = "none"                    # ← Default value to prevent UnboundLocalError
+        syntax_passed = False
 
+        # ───────── SYNTAX CHECK ─────────
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # Write all files
                 for path, code in files.items():
                     full = os.path.join(tmpdir, path)
                     os.makedirs(os.path.dirname(full), exist_ok=True)
+
                     with open(full, "w", encoding="utf-8") as f:
                         f.write(code)
 
-                # Compile check for Python files
                 for path in files:
                     if path.endswith(".py"):
                         py_compile.compile(
@@ -74,18 +96,31 @@ class Tester(Agent):
                             doraise=True
                         )
 
-                passed = True
-                print("[Tester] All files compiled successfully")
+                syntax_passed = True
 
         except Exception as e:
             stderr = str(e)
-            print(f"[Tester] Test failed: {e}")
 
-        error_type = self.classify_error(stderr)
+        # ───────── ANALYSIS ─────────
+        issues = self.analyze_code(files, template)
 
-        print(f"[Tester] {'PASSED' if passed else 'FAILED'} → {error_type}")
+        # ───────── SMART PASS LOGIC ─────────
+        # Keep your original intent but make it more reliable
+        critical_issues = [
+            i for i in issues
+            if "Missing requirements" in i
+            or "syntax" in stderr.lower()
+            or "Streamlit not used properly" in i
+            or "FastAPI not used properly" in i
+            or "Missing __main__ entry point" in i
+        ]
 
-        # Publish result
+        passed = syntax_passed and len(critical_issues) == 0
+
+        print(f"[Tester] {'PASSED' if passed else 'FAILED'}")
+        print(f"[Tester] Issues: {issues}")
+
+        # ───────── PUBLISH RESULTS ─────────
         await self.bus.publish(
             Message(
                 sender=self.name,
@@ -95,10 +130,11 @@ class Tester(Agent):
                     "files": files,
                     "task": task,
                     "passed": passed,
+                    "issues": issues,
                     "stderr": stderr,
-                    "error_type": error_type,
                     "fix_attempts": attempts,
-                    "user_id": user_id
-                }
+                    "user_id": user_id,
+                    "template": template,
+                },
             )
         )

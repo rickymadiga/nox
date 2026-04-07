@@ -1,13 +1,14 @@
 import asyncio
+import time
 import logging
 from typing import Any, Dict, List, Optional, Callable
 from collections import defaultdict
-
-from nox.core.capability_index import CapabilityIndex
-from nox.core.plugin_loader import load_plugins
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from ..core.capability_index import CapabilityIndex
+from .plugin_loader import load_plugins
 
 # ────────────────────────────────────────────────
 # SIMPLE EVENT BUS
@@ -18,14 +19,15 @@ class SimpleBus:
 
     def subscribe(self, event_type: str, callback: Callable) -> None:
         self.subscribers[event_type].append(callback)
+        logger.debug(f"[BUS] Subscribed to event: {event_type}")
 
     async def publish(self, message: Any) -> None:
-        event_type = None
-
         if isinstance(message, dict):
             event_type = message.get("type") or message.get("message_type")
         elif hasattr(message, "message_type"):
             event_type = message.message_type
+        else:
+            event_type = None
 
         if not event_type:
             return
@@ -41,30 +43,58 @@ class SimpleBus:
 
 
 # ────────────────────────────────────────────────
-# RUNTIME
+# RUNTIME CORE
 # ────────────────────────────────────────────────
 class Runtime:
-    def __init__(self):
+    def __init__(self, bus: Optional[SimpleBus] = None):
+        self.bus = bus or SimpleBus()
+
         self.agents: Dict[str, Any] = {}
+        self.system_agents: Dict[str, Any] = {}
+        self.tools: Dict[str, Any] = {}
+
         self.capabilities = CapabilityIndex()
-        self.bus = SimpleBus()
 
-        logger.info("[RUNTIME] Initialized")
+        # Multi-user support for last_zip
+        self.last_zip: Dict[str, Dict[str, Any]] = {}   # user_id → zip_data
+        self.logs: List[str] = []
 
+        # Subscribe to forge completion event
+        self.bus.subscribe("forge_complete", self._on_forge_complete)
+
+        logger.info("[RUNTIME] Initialized successfully")
+
+    # ───── TOOLS ─────
+    def register_tool(self, name: str, tool: Any) -> None:
+        self.tools[name] = tool
+        logger.info(f"[TOOL] Registered: {name}")
+
+    def get_tool(self, name: str) -> Optional[Any]:
+        return self.tools.get(name)
+
+    # ───── AGENTS ─────
     def register_agent(self, name: str, agent: Any) -> None:
         try:
             if hasattr(agent, "runtime"):
                 agent.runtime = self
-
             self.agents[name] = agent
             logger.info(f"[AGENT] Registered: {name}")
-
         except Exception as e:
-            logger.error(f"[AGENT ERROR] register {name}: {e}")
+            logger.error(f"[AGENT ERROR] Failed to register {name}: {e}", exc_info=True)
+
+    def register_system_agent(self, name: str, agent: Any) -> None:
+        try:
+            if hasattr(agent, "runtime"):
+                agent.runtime = self
+            self.system_agents[name] = agent
+            logger.info(f"[SYSTEM AGENT] Registered: {name}")
+        except Exception as e:
+            logger.error(f"[SYSTEM AGENT ERROR] Failed to register {name}: {e}", exc_info=True)
 
     def get_agent(self, name: str) -> Optional[Any]:
-        return self.agents.get(name)
+        return self.agents.get(name) or self.system_agents.get(name)
 
+    # ───── CAPABILITIES ─────
     def register_capability(
         self,
         agent_name: str,
@@ -78,175 +108,223 @@ class Runtime:
                 intent=intent,
                 keywords=keywords
             )
-
             if priority != 0:
                 self.capabilities.set_priority(agent_name, priority)
 
-            logger.info(f"[CAPABILITY] {agent_name} → {intent}")
+            logger.info(f"[CAPABILITY] Registered → {agent_name} for intent: {intent}")
+        except Exception as e:
+            logger.error(f"[CAPABILITY ERROR] {agent_name}: {e}", exc_info=True)
+
+    # ───── EXECUTION ─────
+    async def execute_agent(self, name: str, task: Dict[str, Any]) -> Dict[str, Any]:
+        agent = self.get_agent(name)
+        if not agent:
+            return {"error": f"Agent '{name}' not found"}
+
+        try:
+            result = agent.run(task)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return result or {}
+        except Exception as e:
+            logger.error(f"[AGENT EXECUTION ERROR] {name}: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    # ───── FORGE COMPLETE HANDLER ─────
+    async def _on_forge_complete(self, message: Any) -> None:
+        try:
+            payload = (
+                message.payload
+                if hasattr(message, "payload")
+                else message.get("payload", {})
+            )
+
+            user_id = payload.get("user_id", "guest")
+            zip_bytes = payload.get("zip_bytes")
+
+            if zip_bytes:
+                self.last_zip[user_id] = {
+                    "bytes": zip_bytes,
+                    "filename": payload.get("filename", "nox_app.zip")
+                }
+
+            log_msg = f"✅ Build completed for user '{user_id}' → {payload.get('project_name', 'Unnamed')}"
+            self.logs.append(log_msg)
+
+            logger.info(f"[RUNTIME] Forge complete processed for user: {user_id}")
+
+            # Notify Lily if available
+            lily = self.get_agent("lily")
+            if lily and hasattr(lily, "complete_job"):
+                lily.complete_job(user_id, self.last_zip.get(user_id, {}))
 
         except Exception as e:
-            logger.error(f"[CAPABILITY ERROR] {agent_name}: {e}")
-
-    async def execute_agents(
-        self,
-        agent_names: List[str],
-        task: Dict[str, Any]
-    ) -> Dict[str, Any]:
-
-        async def run_single(name: str):
-            agent = self.get_agent(name)
-            if not agent:
-                return name, {"error": "agent not found"}
-
-            try:
-                result = agent.run(task)
-                if asyncio.iscoroutine(result):
-                    result = await result
-
-                return name, result
-
-            except Exception as e:
-                logger.error(f"[AGENT ERROR] {name}: {e}", exc_info=True)
-                return name, {"error": str(e)}
-
-        coros = [run_single(name) for name in agent_names]
-        responses = await asyncio.gather(*coros, return_exceptions=True)
-
-        results: Dict[str, Any] = {}
-        for item in responses:
-            if isinstance(item, Exception):
-                continue
-            name, res = item
-            results[name] = res
-
-        return results
+            logger.error(f"[RUNTIME] Error in _on_forge_complete: {e}", exc_info=True)
 
 
 # ────────────────────────────────────────────────
 # ENGINE
 # ────────────────────────────────────────────────
-class Engine:
-    def __init__(self):
-        self.runtime = Runtime()
 
-        # Load plugins safely
+
+class Engine:
+    MIN_BUILD_CREDITS = 200  # 🔒 hard minimum threshold
+
+    def __init__(self):
+
+        self.runtime = Runtime()
+        self._billing_locks = defaultdict(asyncio.Lock)
+
         try:
             load_plugins(self.runtime)
+            logger.info("[ENGINE] Plugins loaded successfully")
         except Exception as e:
             logger.error(f"[PLUGIN LOAD ERROR] {e}", exc_info=True)
 
-        logger.info("[ENGINE] Ready")
+        logger.info("[ENGINE] Initialized and ready")
 
-    def _synthesize(self, results: Dict[str, Any]) -> str:
-        if not results:
-            return "No output."
+    # ────────────────────────────────────────────────
+    # EXECUTE AGENT
+    # ────────────────────────────────────────────────
+    async def execute_agent(self, agent_name: str, task: Any, user_id: Optional[str] = None):
+        try:
+            # 🚫 Block direct build execution (security layer)
+            if agent_name == "app_builder" and not task.get("authorized"):
+                raise Exception("❌ Unauthorized build attempt")
 
-        messages = []
-        for agent, res in results.items():
-            if isinstance(res, dict):
-                messages.append(
-                    res.get("message")
-                    or res.get("response")
-                    or res.get("output")
-                    or f"{agent}: {str(res)}"
-                )
-            else:
-                messages.append(f"{agent}: {str(res)}")
+            agent = self.runtime.get_agent(agent_name)
+            if not agent:
+                logger.warning(f"[Engine] Agent not found: {agent_name}")
+                return {"error": str(e)}
 
-        return "\n\n".join(messages)
+            logger.info(f"[Engine] Executing agent: {agent_name}")
 
-    async def handle_prompt(self, prompt: str, user_id: str = "guest") -> Dict[str, Any]:
-        if not prompt or not prompt.strip():
-            return {"status": "error", "response": "Empty prompt"}
+            if hasattr(agent, "run"):
+                if user_id is not None and isinstance(task, dict):
+                    task = task.copy()
+                    task["user_id"] = user_id
 
-        task = {
-            "prompt": prompt,
-            "intent": "user_prompt",
-            "user_id": user_id
-        }
+                result = agent.run(task)
 
-        lily = self.runtime.get_agent("lily")
+                if asyncio.iscoroutine(result):
+                    result = await result
+
+                return result
+
+            logger.warning(f"[Engine] Agent {agent_name} has no run() method")
+            return {"error": str(e)}
+
+        except Exception as e:
+            logger.error(f"[Engine] Failed to execute {agent_name}: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    # ────────────────────────────────────────────────
+    # 🔥 PRE-AUTH BUILD FLOW
+    # ────────────────────────────────────────────────
+    async def _run_build_with_capture(self, task, user_id, cost):
         billing = self.runtime.get_agent("billing_agent")
 
-        if not lily:
-            return {"status": "error", "response": "Lily not available"}
+        try:
+            # ✅ mark authorized
+            task["authorized"] = True
+
+            await self.execute_agent("app_builder", task, user_id=user_id)
+
+            # ✅ SUCCESS → capture
+            billing.capture(user_id, cost)
+            logger.info(f"[BILLING] Captured {cost} credits for {user_id}")
+
+        except Exception as e:
+            # ❌ FAIL → release
+            billing.release(user_id, cost)
+            logger.error(f"[BILLING] Released {cost} credits for {user_id} due to error: {e}")
+
+    # ────────────────────────────────────────────────
+    # HANDLE PROMPT (MAIN ENTRY)
+    # ────────────────────────────────────────────────
+    async def handle_prompt(self, prompt: str, user_id: str = "default_user"):
+        start_time = time.time()
 
         try:
-            # ───── LILY DECISION ─────
-            lily_res = lily.run(task)
-            if asyncio.iscoroutine(lily_res):
-                lily_res = await lily_res
+            lily = self.runtime.get_agent("lily")
+            if not lily:
+                return {"response": "❌ Lily agent not available"}
 
-            if not isinstance(lily_res, dict):
-                return {"status": "success", "response": str(lily_res)}
+            decision = await lily.run({
+                "prompt": prompt,
+                "user_id": user_id,
+                "context": {}
+            })
 
-            action = lily_res.get("action", "respond")
+            action = decision.get("action")
+            message = decision.get("message", "")
+            cost = decision.get("price", 0)
 
-            # ───── BILLING (SAFE + ADMIN BYPASS) ─────
-            if billing:
-                try:
-                    user_data = billing._get_user(user_id) or {}
-                    is_admin = user_data.get("is_admin", False)
+            # ───── QUOTE ─────
+            if action == "quote":
+                return {
+                    "response": message,
+                    "price": cost,
+                    "awaiting_confirmation": True
+                }
 
-                    if not is_admin:
-                        bill_res = billing.run({
-                            "user_id": user_id,
-                            "action": action
-                        })
+            # ───── BUILD ─────
+            if action == "build":
+                billing = self.runtime.get_agent("billing_agent")
+                if not billing:
+                    return {"response": "❌ Billing system unavailable"}
 
-                        if isinstance(bill_res, dict) and bill_res.get("status") == "blocked":
-                            return {
-                                "status": "error",
-                                "response": bill_res.get("message", "Not enough credits")
-                            }
-                    else:
-                        logger.info(f"[ADMIN BYPASS] {user_id}")
+                cost = max(self.MIN_BUILD_CREDITS, int(decision.get("price") or 0))
 
-                except Exception as e:
-                    logger.warning(f"[BILLING ERROR IGNORED] {e}")
+                prompt_str = str(decision.get("prompt", prompt))
 
-            # ───── ACTION EXECUTION ─────
-            results = None
-            final_response = ""
+                task = {
+                    "prompt": prompt_str,
+                    "input": prompt_str,
+                    "user_id": user_id,
+                    "context": decision.get("context") or {"user_id": user_id}
+                }
 
-            if action == "respond":
-                final_response = lily_res.get("message", "Done.")
+                lock = self._billing_locks[user_id]
 
-            elif action == "delegate":
-                target = lily_res.get("target")
-                if target:
-                    results = await self.runtime.execute_agents([target], task)
-                    final_response = self._synthesize(results)
+                async with lock:
+                    balance = billing.get_balance(user_id)
+                    credits = balance["credits"]
 
-            elif action == "delegate_multi":
-                targets = lily_res.get("targets", [])
-                if targets:
-                    results = await self.runtime.execute_agents(targets, task)
-                    final_response = self._synthesize(results)
+                if credits < cost:
+                    return {"response": f"❌ Not enough credits. Need {cost}, have {credits}."}
 
-            elif action == "orchestrate":
-                agents = self.runtime.capabilities.match(prompt)
-                if agents:
-                    results = await self.runtime.execute_agents(agents, task)
-                    final_response = self._synthesize(results)
-                else:
-                    final_response = "No suitable agent found."
+                    reserve = billing.reserve(user_id, cost)
 
-            else:
-                final_response = lily_res.get("message", "Done.")
+                asyncio.create_task(
+                    self._run_build_with_capture(task, user_id, cost)
+                )
 
+                return {
+                    "response": f"🚀 Build started ({cost} credits reserved)",
+                    "zip": None,
+                    "logs": list(self.runtime.logs)[-10:],
+                    "graph": {
+                        "status": "running",
+                        "steps": ["Planner", "Coder", "Tester", "Reviewer", "Assembler"]
+                    }
+                }
+
+            # ───── DEFAULT CHAT ─────
             return {
-                "status": "success",
-                "response": final_response,
-                "results": results
+                "response": message or "🤖 Done"
             }
 
         except Exception as e:
             logger.error(f"[ENGINE ERROR] {e}", exc_info=True)
-            return {"status": "error", "response": str(e)}
+            return {
+                "response": f"❌ Error: {str(e)}"
+            }
 
-
+        finally:
+            duration = time.time() - start_time
+            logger.info(f"[ENGINE] Completed in {duration:.2f}s")
 # ────────────────────────────────────────────────
-# GLOBAL SINGLETON (CRITICAL FIX)
+# GLOBAL SINGLETON
 # ────────────────────────────────────────────────
 engine = Engine()

@@ -1,18 +1,18 @@
 import asyncio
+import sys
 from typing import Final
 
 from ..core.event_bus import EventBus
 from ..core.message import Message
+from ..memory.memory import Memory
 
-
-# Agents
 from ..agents.planner import PlannerAgent
 from ..agents.coder import Coder
 from ..agents.tester import Tester
 from ..agents.reviewer import Reviewer
 from ..agents.debugger import Debugger
-from ..agents.fixer import Fixer
 from ..agents.assembler import Assembler
+from ..agents.fixer import Fixer
 
 
 AGENTS = [
@@ -28,82 +28,115 @@ AGENTS = [
 INITIAL_WAIT_AFTER_TASK: Final[float] = 8.0
 
 
-# 🔥 CLEAN RUNTIME (NO MAGIC)
-class Runtime:
-    def __init__(self, bus):
-        self.bus = bus
-        self.agents = {}
-
-    def register_agent(self, name: str, agent):
-        self.agents[name] = agent
-        print(f"[Runtime] Registered agent: {name}")
-
-    def get_agent(self, name: str):
-        return self.agents.get(name)
-
-
-# ─────────────────────────────────────────────
-async def create_and_register_agents(runtime: Runtime):
+async def create_and_register_agents(bus: EventBus, context: dict) -> None:
     print("[Arena] Creating and registering agents...\n")
 
-    runtime.agents.clear()
+    context["agents"] = []
+
+    # ✅ helper to access agents globally
+    def get_agent(name):
+        for a in context["agents"]:
+            if a.name == name:
+                return a
+        return None
+
+    context["get_agent"] = get_agent
 
     for agent_class, name in AGENTS:
-        try:
-            # 🔥 NEW STANDARD
-            agent = agent_class(runtime)
 
-            runtime.register_agent(name, agent)
+        agent = agent_class(name, bus, context)
 
-            if hasattr(agent, "register"):
-                agent.register()
+        # ✅ inject runtime
+        agent.runtime = context
 
-            print(f"[Arena] {name} registered")
+        agent.register()
 
-        except Exception as e:
-            print(f"[Arena] Failed to register {name}: {e}")
+        context["agents"].append(agent)
 
-    print("\n[Arena] All agents registered.\n")
+        print(f"[Arena] {name.capitalize()} registered")
+
+    print("\n[Arena] All agents registered successfully.\n")
 
 
-# ─────────────────────────────────────────────
-async def run_task_pipeline(runtime: Runtime, task: str):
-    print(f"[Arena] → Publishing task: '{task}'")
+async def run_task_pipeline(bus: EventBus, task: str) -> None:
 
-    # 🔥 DICT EVENT (NOT Message)
-    await runtime.bus.publish(
-    Message(
+    message = Message(
         sender="arena",
         recipient="planner",
         message_type="TASK_REQUEST",
-        payload={
-            "task": task,
-            "user_id": "default_user"
-        }
+        payload={"task": task.strip()},
     )
-)
+
+    print(f"[Arena] → Publishing task: {task!r}")
+
+    await bus.publish(message)
 
     print(f"[Arena] Waiting {INITIAL_WAIT_AFTER_TASK:.1f}s...\n")
+
     await asyncio.sleep(INITIAL_WAIT_AFTER_TASK)
 
     print("[Arena] Pipeline cycle finished.\n")
 
 
-# ─────────────────────────────────────────────
-async def run_forge(task: str):
-    print("[EventBus] Initialized")
+async def run_forge(task: str, runtime=None, user_id: str = "default_user"):
 
-    bus = EventBus()
+    # 🔥 reuse runtime bus if available
+    if runtime and hasattr(runtime, "bus"):
+        bus = runtime.bus
+    else:
+        bus = EventBus()
+        bus.message_class = Message
 
-    runtime = Runtime(bus)
+    # 🔥 shared context
+    context = {
+        "bus": bus,
+        "runtime": runtime,
+        "user_id": user_id
+    }
 
-    # 🔥 Register agents
-    await create_and_register_agents(runtime)
+    # memory
+    memory = Memory("memory", bus, context)
+    context["memory"] = memory
 
-    # 🔥 Run pipeline
-    await run_task_pipeline(runtime, task)
+    await create_and_register_agents(bus, context)
 
-    return {
-        "status": "completed",
+    # 🔥 RESULT HOLDER
+    result_container = {"result": None}
+
+    # 🔥 LISTENER FOR COMPLETION
+    async def on_complete(message: Message):
+        print("[Arena] ✅ forge_complete received")
+
+        result_container["result"] = message.payload
+
+    bus.subscribe("forge_complete", on_complete)
+
+    # 🔥 START PIPELINE
+    await bus.publish(
+        Message(
+            sender="arena",
+            recipient="planner",
+            message_type="TASK_REQUEST",
+            payload={
+                "task": str(task).strip() if task else "",
+                "user_id": user_id
+            },
+        )
+    )
+
+    print(f"[Arena] Waiting for completion...\n")
+
+    # 🔥 WAIT UNTIL RESULT OR TIMEOUT
+    for _ in range(20):  # ~20 seconds max
+        if result_container["result"] is not None:
+            break
+        await asyncio.sleep(1)
+
+    print("[Arena] Pipeline cycle finished.\n")
+
+    # 🔥 RETURN REAL RESULT
+    return result_container["result"] or {
+        "status": "timeout",
         "task": task,
+        "user_id": user_id
     }

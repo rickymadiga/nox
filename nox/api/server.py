@@ -1,37 +1,106 @@
-import stripe
 import os
+import io
+import asyncio
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 
+import stripe
 from dotenv import load_dotenv
-load_dotenv()
-
-from fastapi import Request, FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from jose import jwt, JWTError
 from pydantic import BaseModel
 
-from api.routes.build import router as build_router
-from nox.runtime.engine_runtime import engine  # ✅ USE ENGINE ONLY
-
+# NOX Engine
+from nox.runtime.engine_runtime import engine
 
 # ────────────────────────────────────────────────
-# STRIPE CONFIG
+# CONFIGURATION
 # ────────────────────────────────────────────────
+load_dotenv()
+
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8501")
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+ALGORITHM = "HS256"
+
+security = HTTPBearer()
+
+# ────────────────────────────────────────────────
+# GLOBAL RUNTIME & MULTI-USER ZIP STORAGE
+# ────────────────────────────────────────────────
+runtime = engine.runtime
+
+# Safe initialization of multi-user zip storage
+if not hasattr(runtime, "last_zip") or not isinstance(runtime.last_zip, dict):
+    runtime.last_zip = {}
+
+# ────────────────────────────────────────────────
+# IN-MEMORY DATABASE (TEMPORARY)
+# ────────────────────────────────────────────────
+users_db: dict[str, dict] = {}
+
+# ────────────────────────────────────────────────
+# PYDANTIC MODELS
+# ────────────────────────────────────────────────
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AutoRechargeRequest(BaseModel):
+    enabled: bool
 
 
 # ────────────────────────────────────────────────
-# REQUEST MODEL
+# AUTH HELPERS
 # ────────────────────────────────────────────────
-class PromptRequest(BaseModel):
-    prompt: str
+def create_token(username: str) -> str:
+    expire = datetime.utcnow() + timedelta(hours=24)
+    return jwt.encode(
+        {"sub": username, "exp": expire},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> str:
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+        return payload["sub"]
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 # ────────────────────────────────────────────────
-# APP INIT
+# LIFESPAN
 # ────────────────────────────────────────────────
-app = FastAPI(title="Forge AI Builder")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 NOX Backend starting...")
+    # Plugins are loaded inside Engine.__init__ — no need to reload here
+    yield
+    print("🛑 NOX Backend shutting down...")
+
+
+# ────────────────────────────────────────────────
+# FASTAPI APP SETUP
+# ────────────────────────────────────────────────
+app = FastAPI(title="NOX AI Backend", lifespan=lifespan)
+
+# Static exports
+os.makedirs("generated_apps", exist_ok=True)
+app.mount("/exports", StaticFiles(directory="generated_apps"), name="exports")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,114 +110,172 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(build_router)
-
-
 # ────────────────────────────────────────────────
 # HEALTH CHECK
 # ────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {
-        "service": "Forge AI Builder",
-        "status": "running"
+    return {"status": "running", "service": "NOX AI"}
+
+
+# ────────────────────────────────────────────────
+# DOWNLOAD ENDPOINTS
+# ────────────────────────────────────────────────
+@app.get("/download/latest")
+async def download_latest(user: str = Depends(get_current_user)):
+    """Download the latest generated project for the current user."""
+    user_zip = runtime.last_zip.get(user)
+
+    if not user_zip or "bytes" not in user_zip:
+        raise HTTPException(status_code=404, detail="No project found for this user")
+
+    return StreamingResponse(
+        io.BytesIO(user_zip["bytes"]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={user_zip.get('filename', 'project.zip')}"
+        }
+    )
+
+
+@app.get("/download/{project}")
+async def download_project(project: str):
+    """Download a specific exported project."""
+    path = f"generated_apps/{project}.zip"
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"{project}.zip"
+    )
+
+
+# ────────────────────────────────────────────────
+# AUTHENTICATION
+# ────────────────────────────────────────────────
+@app.post("/signup")
+async def signup(data: AuthRequest):
+    if data.username in users_db:
+        raise HTTPException(status_code=400, detail="User already exists")
+
+    users_db[data.username] = {
+        "password": data.password,
+        "credits": 50,
+        "auto_recharge": False
     }
 
+    return {"message": "User created successfully"}
+
+
+@app.post("/login")
+async def login(data: AuthRequest):
+    user = users_db.get(data.username)
+
+    if not user or user.get("password") != data.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    return {"token": create_token(data.username)}
+
 
 # ────────────────────────────────────────────────
-# MAIN CHAT (USES ENGINE)
+# CHAT ENDPOINT (Main Brain → Engine Flow)
 # ────────────────────────────────────────────────
 @app.post("/chat")
-async def chat(data: dict):
-    prompt = data.get("prompt", "")
-
-    result = await engine.handle_prompt(prompt)
-
-    print("ENGINE RESULT:", result)
-
-    return result
-
-
-# ────────────────────────────────────────────────
-# STRIPE CHECKOUT SESSION
-# ────────────────────────────────────────────────
-@app.post("/create-checkout-session")
-async def create_checkout(request: Request):
-    data = await request.json()
-
-    user_id = data.get("user_id", "default_user")
-    plan = data.get("plan")
-
-    stripe_agent = engine.runtime.get_agent("stripe_agent")
-
-    if not stripe_agent:
-        return {"error": "Stripe agent not available"}
-
-    result = stripe_agent.run({
-        "action": "checkout",
-        "user_id": user_id,
-        "plan": plan
-    })
-
-    return result
-
-
-# ────────────────────────────────────────────────
-# STRIPE WEBHOOK (REAL MONEY HANDLER)
-# ────────────────────────────────────────────────
-@app.post("/stripe/webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-
+async def chat(
+    data: dict,
+    user: str = Depends(get_current_user)
+):
     try:
-        event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            webhook_secret
-        )
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
+        prompt = data.get("prompt", "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
 
-    # ─────────────────────────────
-    # PAYMENT SUCCESS
-    # ─────────────────────────────
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+        # Ensure zip storage exists
+        if not hasattr(runtime, "last_zip") or runtime.last_zip is None:
+            runtime.last_zip = {}
 
-        user_id = session["metadata"]["user_id"]
-        plan = session["metadata"]["plan"]
+        print(f"[CHAT] Processing prompt for user={user}")
 
-        billing = engine.runtime.get_agent("billing_agent")
+        # Run through Engine (Lily decides action → delegate or respond)
+        result = await engine.handle_prompt(prompt, user_id=user)
 
-        if not billing:
-            return {"error": "Billing agent not found"}
+        # Extract safely
+        response_text = result.get("response") or result.get("message") or str(result)
+        logs = result.get("logs", [])
+        graph = result.get("graph") or result.get("execution_graph")
 
-        # 🔥 CREDIT PACKS
-        credits_map = {
-            "starter": 50,
-            "pro": 250,
-            "mega": 1000
+        # Get user-specific ZIP
+        user_zip = runtime.last_zip.get(user) if isinstance(runtime.last_zip, dict) else None
+
+        # Build final response
+        chat_response = {
+            "status": "success",
+            "response": response_text,
+            "logs": logs,
+            "zip_ready": bool(user_zip),
+            "filename": user_zip.get("filename") if user_zip else None,
         }
 
-        credits = credits_map.get(plan, 50)
+        # Attach full ZIP when available (for frontend download)
+        if user_zip:
+            chat_response["zip"] = user_zip
 
-        # 🔥 UPDATE USER BALANCE
-        user = billing._get_user(user_id)
-        new_credits = user["credits"] + credits
-        billing._update_credits(user_id, new_credits)
+        # Attach graph for frontend visualization
+        if graph:
+            chat_response["graph"] = graph
 
-        print(f"[STRIPE] {user_id} +{credits} credits")
+        print(f"[DEBUG] ZIP READY for {user}: {bool(user_zip)}")
 
-    return {"status": "success"}
+        return chat_response
+
+    except Exception as e:
+        print(f"[CHAT ERROR] {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ────────────────────────────────────────────────
-# LEGACY PROMPT (OPTIONAL)
+# STREAMING LOGS
 # ────────────────────────────────────────────────
-@app.post("/prompt")
-async def handle_prompt(req: PromptRequest):
-    result = await engine.handle_prompt(req.prompt)
-    return result
+@app.get("/stream")
+async def stream(user: str = Depends(get_current_user)):
+    agent = runtime.get_agent("code_agent")
+
+    if not agent:
+        async def empty_stream():
+            yield "data: No code_agent available\n\n"
+        return StreamingResponse(empty_stream(), media_type="text/event-stream")
+
+    async def generator():
+        async for msg in agent.stream(user):
+            yield f"data: {msg}\n\n"
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+# ────────────────────────────────────────────────
+# CREDITS
+# ────────────────────────────────────────────────
+@app.get("/credits")
+async def get_credits(user: str = Depends(get_current_user)):
+    user_data = users_db.get(user, {})
+    return {"credits": user_data.get("credits", 0)}
+
+
+# ────────────────────────────────────────────────
+# AUTO RECHARGE (Placeholder)
+# ────────────────────────────────────────────────
+@app.post("/toggle-auto-recharge")
+async def toggle_auto_recharge(req: AutoRechargeRequest, user: str = Depends(get_current_user)):
+    if user not in users_db:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    users_db[user]["auto_recharge"] = req.enabled
+
+    return {
+        "status": "ok",
+        "auto_recharge": req.enabled,
+        "message": f"Auto-recharge {'enabled' if req.enabled else 'disabled'}"
+    }

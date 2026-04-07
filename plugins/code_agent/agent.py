@@ -1,96 +1,88 @@
-import asyncio
-from collections import defaultdict
+from nox.core.agent import Agent
+from nox.core.message import Message
 
 
-class CodeAgent:
+class CodeAgent(Agent):
+    """
+    Observes the Forge pipeline and streams live progress/logs 
+    to the frontend via runtime.logs and the /stream endpoint.
+    """
+
     def __init__(self, runtime):
+        super().__init__(runtime)
+
         self.runtime = runtime
         self.bus = runtime.bus
+        self.name = "code_agent"
 
-        # each user gets its own stream queue
-        self.queues = defaultdict(asyncio.Queue)
+        # 🔥 Subscribe to important pipeline events
+        events = [
+            "TASK_REQUEST",
+            "PLAN_CREATED",
+            "CODE_GENERATED",
+            "TEST_RESULTS",
+            "REVIEW_COMPLETED",
+            "CODE_APPROVED",
+            "forge_complete",
+        ]
 
-    # ─────────────────────────────
-    def register(self):
-        self.bus.subscribe("forge_update", self.on_update)
-        self.bus.subscribe("forge_complete", self.on_complete)
+        for event in events:
+            self.bus.subscribe(event, self.on_event)
 
-        print("[CodeAgent] Subscribed to forge events")
+        print(f"[{self.name}] Watching Forge pipeline for live updates...")
 
-    # ─────────────────────────────
-    async def run(self, task):
-        if not isinstance(task, dict):
-            return {"error": "Invalid task"}
+    # ─────────────────────────────────────────────
+    async def on_event(self, message: Message):
+        """Process events and push logs to runtime (shared with frontend)."""
+        try:
+            event_type = getattr(message, "message_type", None)
+            if not event_type:
+                return
 
-        prompt = task.get("prompt", "")
-        user_id = task.get("user_id", "default_user")
+            payload = getattr(message, "payload", {}) or {}
 
-        self._push(user_id, f"🚀 Starting: {prompt}")
+            # Build rich log line
+            log_line = f"🔹 {event_type}"
 
-        # 🔥 Trigger forge pipeline here if needed
-        # await self.runtime.run_forge(prompt)
+            if task := payload.get("task"):
+                log_line += f" → {task}"
+            if status := payload.get("status"):
+                log_line += f" [{status}]"
+            if msg := payload.get("message"):
+                log_line += f" | {msg}"
+
+            # Ensure runtime.logs list exists
+            if not hasattr(self.runtime, "logs") or self.runtime.logs is None:
+                self.runtime.logs = []
+
+            self.runtime.logs.append(log_line)
+
+            # Keep only last 100 logs to avoid memory growth
+            if len(self.runtime.logs) > 100:
+                self.runtime.logs = self.runtime.logs[-100:]
+
+            print(f"[{self.name}] {log_line}")
+
+        except Exception as e:
+            print(f"[{self.name} ERROR] {e}")
+
+    # ─────────────────────────────────────────────
+    def run(self, task: dict):
+        """Fallback handler when CodeAgent is called directly via engine."""
+        prompt = task.get("prompt", "").strip() or "(no prompt)"
 
         return {
-            "agent": "code_agent",
-            "message": f"Processing: {prompt}"
+            "message": f"CodeAgent received: {prompt[:120]}{'...' if len(prompt) > 120 else ''}",
+            "status": "received",
+            "agent": "code_agent"
         }
 
-    # ─────────────────────────────
-    def _push(self, user_id, message):
-        if not user_id:
-            user_id = "default_user"
 
-        if user_id not in self.queues:
-            self.queues[user_id] = asyncio.Queue()
-
-        try:
-            self.queues[user_id].put_nowait(message)
-        except Exception as e:
-            print(f"[CodeAgent] Queue error: {e}")
-
-    # ─────────────────────────────
-    def _extract(self, message):
-        """
-        Normalize Message or dict → dict
-        """
-        if hasattr(message, "payload"):
-            return message.payload
-        return message or {}
-
-    # ─────────────────────────────
-    def on_update(self, message):
-        data = self._extract(message)
-
-        user_id = data.get("user_id", "default_user")
-        log = f"⚙️ {data.get('message', '')}"
-
-        print(log)
-        self._push(user_id, log)
-
-    # ─────────────────────────────
-    def on_complete(self, message):
-      try:
-        payload = message.get("payload", message)
-
-        user_id = payload.get("user_id", "default_user")
-        filename = payload.get("filename", "project.zip")
-        zip_bytes = payload.get("zip_bytes")
-
-        if not zip_bytes:
-            self._push(user_id, "❌ No file received")
-            return
-
-        # 🔥 Store latest result for download
-        self.runtime.last_zip = {
-            "bytes": zip_bytes,
-            "filename": filename,
-            "user_id": user_id,
-        }
-
-        log = f"✅ Project ready!\n📦 {filename}"
-        print("[CodeAgent]", log)
-
-        self._push(user_id, log)
-
-      except Exception as e:
-        print("[CodeAgent ERROR]", e)
+# ─────────────────────────────────────────────
+# PLUGIN ENTRY POINT (This is what the loader looks for)
+# ─────────────────────────────────────────────
+def register(runtime):
+    """This function is called by plugin_loader."""
+    agent = CodeAgent(runtime)
+    runtime.register_agent("code_agent", agent)
+    print("[PLUGIN] Code Agent loaded ✅")

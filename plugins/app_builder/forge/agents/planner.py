@@ -1,43 +1,56 @@
-# forge/agents/planner.py
+from typing import List
 
-from typing import List, Any
-
-from ..core.agent import Agent
+from ..agents.base_agent import BaseAgent
 from ..core.message import Message
 
 
-class PlannerAgent(Agent):
-    """
-    Planner agent - now strictly using Message objects
-    """
-
-    def __init__(self, runtime):
-        super().__init__(
-            name="planner",
-            bus=runtime.bus,
-            context={}
-        )
-        self.runtime = runtime
+class PlannerAgent(BaseAgent):
 
     def register(self) -> None:
-        print("[Planner] Subscribing → TASK_REQUEST")
+        print("[Planner] Subscribing to TASK_REQUEST")
         self.bus.subscribe("TASK_REQUEST", self.handle)
 
+    # ─────────────────────────────────────────────
     def _detect_template(self, task: str) -> str:
         task_lower = task.lower().strip()
 
-        if not task_lower:
-            return "cli"
-
-        if any(word in task_lower for word in ["api", "backend", "rest", "server", "endpoint"]):
+        if any(word in task_lower for word in ["api", "backend", "server", "endpoint"]):
             return "fastapi"
 
-        if any(word in task_lower for word in ["dashboard", "data app", "streamlit", "ui", "web app", "visualization"]):
+        if any(word in task_lower for word in ["app", "ui", "dashboard", "web", "streamlit"]):
             return "streamlit"
 
         return "cli"
 
+    # ─────────────────────────────────────────────
+    def _build_plan(self, template: str) -> List[str]:
+
+        if template == "streamlit":
+            return [
+                "Create a Streamlit app using main.py",
+                "Use st.title, inputs, and UI components",
+                "Do NOT include if __name__ == '__main__'",
+                "Ensure code runs with 'streamlit run main.py'"
+            ]
+
+        if template == "fastapi":
+            return [
+                "Create FastAPI app in main.py",
+                "Define routes and endpoints",
+                "Use uvicorn to run the app",
+                "Ensure requirements.txt includes fastapi and uvicorn"
+            ]
+
+        # CLI default
+        return [
+            "Create CLI-based Python script",
+            "Include main() function",
+            "Use if __name__ == '__main__' entry point"
+        ]
+
+    # ─────────────────────────────────────────────
     async def handle(self, message: Message) -> None:
+
         if message.message_type != "TASK_REQUEST":
             return
 
@@ -50,21 +63,16 @@ class PlannerAgent(Agent):
             print("[Planner] Empty task → skipping")
             return
 
-        print(f"[Planner] Received task: {task}")
+        print(f"[Planner] Task: {task}")
 
         template = self._detect_template(task)
-        print(f"[Planner] Selected template: {template}")
+        plan = self._build_plan(template)
 
-        plan: List[str] = [
-            "Understand the task requirements",
-            "Design the overall program structure",
-            "Implement core functionality",
-            "Ensure proper entry point exists"
-        ]
+        print(f"[Planner] Template → {template}")
 
-        if template != "cli":
-            plan.insert(2, f"Set up {template} application skeleton")
-
+        # ─────────────────────────────────────────
+        # 🔥 SEND TO CODER (FIXED)
+        # ─────────────────────────────────────────
         await self.bus.publish(
             Message(
                 sender=self.name,
@@ -72,9 +80,9 @@ class PlannerAgent(Agent):
                 message_type="PLAN_CREATED",
                 payload={
                     "task": task,
+                    "user_id": user_id,        # ✅ CRITICAL FIX
                     "template": template,
-                    "plan": plan,
-                    "user_id": user_id
+                    "plan": plan
                 }
             )
         )

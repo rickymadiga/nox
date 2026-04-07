@@ -1,14 +1,12 @@
-from .agent import AppBuilderAgent
+from .agent import AppBuilderTool
 
 
 def register(runtime):
+    tool = AppBuilderTool(runtime)
 
-    agent = AppBuilderAgent(runtime)
+    # ✅ ONLY REGISTER AS TOOL
+    runtime.register_agent("app_builder",tool)
 
-    runtime.register_agent("app_builder", agent)
+    runtime.register_tool("app_builder", tool)
 
-    runtime.register_capability(
-        agent_name="app_builder",
-        intent="app_building",
-        keywords=["build app", "create app", "generate app"]
-    )
+    print("[AppBuilder] Registered as TOOL 🚀")

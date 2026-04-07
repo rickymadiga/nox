@@ -1,21 +1,34 @@
-from plugins.app_builder.forge.arena.arena import run_forge
+from typing import Any
+from nox.core.agent import Agent  # ✅ correct base
+
+from .forge.arena.arena import run_forge
 
 
-class AppBuilderAgent:
+class AppBuilderTool(Agent):
 
     def __init__(self, runtime):
-        self.runtime = runtime
+        super().__init__(runtime)  # ✅ FIX: match runtime Agent signature
+        self.name = "app_builder"  # ✅ manually set name if needed
 
-    async def run(self, task):
+    def register(self):
+        # Optional: depends on runtime design
+        pass
 
-        prompt = task.get("prompt", "")
+    async def run(self, task: Any, user_id: str = "default_user"):
 
-        print(f"[AppBuilder] received prompt: {prompt}")
+        # ✅ HANDLE INPUT FLEXIBLY
+        if isinstance(task, dict):
+            user_id = task.get("user_id", "default_user")
+            prompt = task.get("prompt") or task.get("input") or ""
+        else:
+            prompt = str(task)
 
-        result = await run_forge(prompt, runtime=self.runtime)
+        print(f"[AppBuilder] 🚀 Starting build for: {prompt} (user: {user_id})")
 
-        return {
-            "agent": "app_builder",
-            "message": "Forge project generation started.",
-            "forge_result": result
-        }
+        result = await run_forge(
+            task=prompt,
+            runtime=self.runtime,
+            user_id=user_id
+        )
+
+        return result

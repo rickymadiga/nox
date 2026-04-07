@@ -1,42 +1,67 @@
 import os
 import httpx
+import time
 from typing import Dict, Any, List
 
 
 class WebAgent:
-    """
-    Internet-enabled agent using Brave Search API.
-
-    Returns structured results for other agents:
-    - title
-    - url
-    - snippet
-    """
-
     def __init__(self, name: str, bus: Any, context: dict):
         self.name = name
         self.bus = bus
         self.context = context
-        self.runtime = None  # injected by runtime
+        self.runtime = None
 
         self.api_key = os.getenv("BRAVE_API_KEY")
+
+        # 🔥 NEW: simple in-memory cache
+        self.cache: Dict[str, Dict] = {}
+        self.cache_ttl = 300  # 5 minutes
+
+        # 🔥 NEW: rate limit
+        self.last_calls: Dict[str, List[float]] = {}
+        self.max_calls_per_user = 5
 
         if not self.api_key:
             print("[WebAgent] WARNING: Missing BRAVE_API_KEY")
 
     async def run(self, task: Dict[str, Any]) -> Dict[str, Any]:
         query = task.get("query") or task.get("prompt")
+        user_id = task.get("user_id", "default")
 
         if not query:
             return {"status": "error", "error": "No query provided"}
 
+        # 🔒 RATE LIMIT
+        if not self._allow_request(user_id):
+            return {
+                "status": "blocked",
+                "error": "Search limit reached. Try later."
+            }
+
+        # ⚡ CACHE CHECK
+        cached = self._get_cache(query)
+        if cached:
+            return {
+                "status": "success",
+                "query": query,
+                "results": cached,
+                "cached": True
+            }
+
         try:
             results = await self._search_brave(query)
+
+            # 💾 STORE CACHE
+            self.cache[query] = {
+                "data": results,
+                "time": time.time()
+            }
 
             return {
                 "status": "success",
                 "query": query,
-                "results": results
+                "results": results,
+                "cached": False
             }
 
         except Exception as e:
@@ -45,6 +70,38 @@ class WebAgent:
                 "error": str(e),
                 "query": query
             }
+
+    # --------------------------------------------------
+    # RATE LIMIT
+    # --------------------------------------------------
+
+    def _allow_request(self, user_id: str) -> bool:
+        now = time.time()
+        window = 60  # 1 minute
+
+        calls = self.last_calls.get(user_id, [])
+        calls = [t for t in calls if now - t < window]
+
+        if len(calls) >= self.max_calls_per_user:
+            return False
+
+        calls.append(now)
+        self.last_calls[user_id] = calls
+        return True
+
+    # --------------------------------------------------
+    # CACHE
+    # --------------------------------------------------
+
+    def _get_cache(self, query: str):
+        entry = self.cache.get(query)
+        if not entry:
+            return None
+
+        if time.time() - entry["time"] > self.cache_ttl:
+            return None
+
+        return entry["data"]
 
     # --------------------------------------------------
     # Brave Search
@@ -74,7 +131,7 @@ class WebAgent:
         return self._parse_results(data)
 
     # --------------------------------------------------
-    # Clean structured output
+    # PARSE + ENRICH
     # --------------------------------------------------
 
     def _parse_results(self, data: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -86,7 +143,9 @@ class WebAgent:
             results.append({
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
-                "snippet": item.get("description", "")
+                "snippet": item.get("description", ""),
+                # 🔥 NEW: short summary field for LLM
+                "summary": (item.get("description", "")[:120] + "...")
             })
 
         return results

@@ -1,5 +1,4 @@
 streamlit
-
 fastapi
 uvicorn
 requests
@@ -18,3 +17,4 @@ databases
 passlib[bcrypt]
 bcrypt
 groq
+dotenv
