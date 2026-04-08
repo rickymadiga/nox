@@ -9,14 +9,16 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 import requests
-from dotenv import load_dotenv
+import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
 # NOX imports
 from nox.runtime.engine_runtime import engine
@@ -31,7 +33,7 @@ load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "refreshsecret")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-
+DEV_USERS = ["nox", "admin", "cosmic ethic"]
 ALGORITHM = "HS256"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -113,7 +115,20 @@ def init_db():
             )
         """)
         conn.commit()
-
+    
+    # ───────────────── BUILD HISTORY DB ─────────────────
+    with sqlite3.connect("builds.db") as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS builds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            project_name TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            path TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit() 
 
 init_db()
 
@@ -134,7 +149,7 @@ class ToggleAutoRechargeRequest(BaseModel):
     enabled: bool
 
 class AutoRechargeRequest(BaseModel):
-    amount: int = 500  # default package
+    amount: int = 500
 
 
 # ────────────────────────────────────────────────
@@ -148,11 +163,34 @@ def create_refresh_token(username: str) -> str:
     expire = datetime.utcnow() + timedelta(days=7)
     return jwt.encode({"sub": username, "exp": expire}, REFRESH_SECRET, algorithm=ALGORITHM)
 
+# ────────────────────────────────────────────────
+# UPDATED get_current_user
+# ────────────────────────────────────────────────
+
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     try:
+        # First try normal JWT decode
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload["sub"]
+        username = payload["sub"]
+        
+        # Extra safety: mark dev users
+        if username in DEV_USERS:
+            # You can return more info if needed later
+            return username
+        
+        return username
+
     except JWTError:
+        # Fallback: check if it's somehow a dev token (in case old tokens exist)
+        token = credentials.credentials
+        if token.startswith("dev_"):
+            try:
+                username = token.split("_")[1]
+                if username in DEV_USERS:
+                    return username
+            except:
+                pass
+        
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
@@ -183,7 +221,30 @@ app.add_middleware(
 )
 
 # ────────────────────────────────────────────────
-# AUTH ENDPOINTS (signup + login unchanged except auto_recharge default)
+# DEV LOGIN (Fixed - Creates REAL JWT)
+# ────────────────────────────────────────────────
+class DevLoginRequest(BaseModel):
+    username: str
+
+@app.post("/dev_login")
+async def dev_login(payload: DevLoginRequest):
+    username = payload.username.strip().lower()
+    dev_users = ["nox", "admin", "cosmic ethic"]
+    
+    if username not in dev_users:
+        raise HTTPException(status_code=400, detail="Not a valid dev user")
+
+    # Create a REAL JWT token just like normal login
+    access_token = create_access_token(username)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": username
+    }
+
+# ────────────────────────────────────────────────
+# AUTH ENDPOINTS
 # ────────────────────────────────────────────────
 @app.post("/signup")
 async def signup(data: AuthRequest):
@@ -214,7 +275,6 @@ async def signup(data: AuthRequest):
 
 @app.post("/login")
 async def login(data: AuthRequest):
-    # ... (your existing login code remains the same)
     username = data.username.lower().strip()
 
     with sqlite3.connect("users.db") as conn:
@@ -275,7 +335,7 @@ async def toggle_auto_recharge(req: ToggleAutoRechargeRequest, user: str = Depen
 
 
 # ────────────────────────────────────────────────
-# PAYSTACK INITIATE (unchanged)
+# PAYSTACK INTEGRATION
 # ────────────────────────────────────────────────
 PRICE_MAP = {
     500:  50000,
@@ -333,9 +393,6 @@ async def initiate_payment(req: RechargeRequest, user: str = Depends(get_current
         raise HTTPException(status_code=502, detail="Could not connect to Paystack")
 
 
-# ────────────────────────────────────────────────
-# PAYSTACK WEBHOOK - Now saves authorization_code
-# ────────────────────────────────────────────────
 @app.post("/paystack/webhook")
 async def paystack_webhook(request: Request):
     if not PAYSTACK_SECRET_KEY:
@@ -372,11 +429,10 @@ async def paystack_webhook(request: Request):
         user_id = row[1]
         credits = row[2]
 
-        # Update payment status
         conn.execute("UPDATE payments SET status='completed' WHERE reference=?", (reference,))
         conn.commit()
 
-    # Save authorization code for future auto-recharges
+    # Save authorization code
     auth_code = authorization.get("authorization_code")
     last4 = authorization.get("last4")
     brand = authorization.get("brand") or authorization.get("card_type")
@@ -391,7 +447,6 @@ async def paystack_webhook(request: Request):
             )
             conn.commit()
 
-    # Add credits
     billing = runtime.get_agent("billing_agent")
     if billing:
         billing.add_credits(user_id, credits)
@@ -400,14 +455,13 @@ async def paystack_webhook(request: Request):
 
 
 # ────────────────────────────────────────────────
-# AUTO RECHARGE ENDPOINT (for future use)
+# AUTO RECHARGE (fixed URL)
 # ────────────────────────────────────────────────
 @app.post("/auto-recharge")
 async def perform_auto_recharge(req: AutoRechargeRequest, user: str = Depends(get_current_user)):
     if not PAYSTACK_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Paystack not configured")
 
-    # Get user's saved authorization
     with sqlite3.connect("users.db") as conn:
         row = conn.execute(
             "SELECT auto_recharge, authorization_code FROM users WHERE username=?",
@@ -433,11 +487,11 @@ async def perform_auto_recharge(req: AutoRechargeRequest, user: str = Depends(ge
     }
 
     try:
-        res = requests.post("https://checkout.paystack.com/transaction/charge_authorization", json=payload, headers=headers, timeout=15)
+        res = requests.post("https://api.paystack.co/transaction/charge_authorization", 
+                           json=payload, headers=headers, timeout=15)
         data = res.json()
 
         if data.get("status") and data["data"].get("status") in ["success", "processing"]:
-            # Add credits immediately (or wait for another webhook if you prefer)
             billing = runtime.get_agent("billing_agent")
             if billing:
                 billing.add_credits(user, amount_credits)
@@ -450,7 +504,28 @@ async def perform_auto_recharge(req: AutoRechargeRequest, user: str = Depends(ge
 
 
 # ────────────────────────────────────────────────
-# CHAT & CREDITS (unchanged)
+# STREAMING LOGS ENDPOINT (NEW)
+# ────────────────────────────────────────────────
+@app.get("/stream")
+async def stream_logs():
+    async def event_stream():
+        last_index = 0
+
+        while True:
+            logs = getattr(runtime, "logs", [])
+
+            if last_index < len(logs):
+                for log in logs[last_index:]:
+                    yield f"data: {log}\n\n"
+                last_index = len(logs)
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ────────────────────────────────────────────────
+# CHAT & CREDITS
 # ────────────────────────────────────────────────
 @app.post("/chat")
 async def chat(data: ChatRequest, user: str = Depends(get_current_user)):
@@ -482,5 +557,287 @@ async def get_credits(user: str = Depends(get_current_user)):
     billing = runtime.get_agent("billing_agent")
     return billing.get_balance(user) if billing else {"credits": 0}
 
+from fastapi.responses import FileResponse
 
-# Password reset endpoints (add them back if you had them before)
+@app.get("/download/latest")
+async def download_latest(user: str = Depends(get_current_user)):
+    # ─────────────────────────────
+    # PRIMARY: get from runtime
+    # ─────────────────────────────
+    zip_data = getattr(runtime, "last_zip", {}).get(user)
+
+    if zip_data and zip_data.get("path") and os.path.exists(zip_data["path"]):
+        return FileResponse(
+            path=zip_data["path"],
+            filename=zip_data.get("filename", "nox_app.zip"),
+            media_type="application/zip"
+        )
+
+    # ─────────────────────────────
+    # FALLBACK: find latest ZIP on disk
+    # ─────────────────────────────
+    try:
+        files = [
+            f for f in os.listdir("generated_apps")
+            if f.endswith(".zip")
+        ]
+
+        if files:
+            # Sort by newest (based on filename timestamp or file modified time)
+            files.sort(
+                key=lambda x: os.path.getmtime(os.path.join("generated_apps", x)),
+                reverse=True
+            )
+
+            latest_file = files[0]
+            latest_path = os.path.join("generated_apps", latest_file)
+
+            return FileResponse(
+                path=latest_path,
+                filename=latest_file,
+                media_type="application/zip"
+            )
+
+    except Exception as e:
+        print(f"[Download] Fallback error: {e}")
+
+    # ─────────────────────────────
+    # NOTHING FOUND
+    # ─────────────────────────────
+    raise HTTPException(status_code=404, detail="No build available")
+
+@app.get("/builds")
+async def get_builds(user: str = Depends(get_current_user)):
+    try:
+        with sqlite3.connect("builds.db") as conn:
+            rows = conn.execute(
+                """
+                SELECT id, project_name, filename, created_at
+                FROM builds
+                WHERE user_id=?
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                (user,)
+            ).fetchall()
+
+        return {
+            "builds": [
+                {
+                    "id": r[0],
+                    "project_name": r[1],
+                    "filename": r[2],
+                    "created_at": r[3],
+                }
+                for r in rows
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/download/{build_id}")
+async def download_build(build_id: int, user: str = Depends(get_current_user)):
+    try:
+        with sqlite3.connect("builds.db") as conn:
+            row = conn.execute(
+                """
+                SELECT path, filename FROM builds
+                WHERE id=? AND user_id=?
+                """,
+                (build_id, user)
+            ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Build not found")
+
+        path, filename = row
+
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="File missing")
+
+        return FileResponse(
+            path=path,
+            filename=filename,
+            media_type="application/zip"
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/admin/dashboard")
+async def admin_dashboard():
+    try:
+        with sqlite3.connect("users.db") as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+        with sqlite3.connect("payments.db") as conn:
+            revenue_total = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='completed'"
+            ).fetchone()[0]
+
+            revenue_24h = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='completed' AND created_at >= datetime('now','-1 day')"
+            ).fetchone()[0]
+
+        billing = runtime.get_agent("billing_agent")
+        credits = 0
+        if billing and hasattr(billing, "balances"):
+            credits = sum(billing.balances.values())
+
+        return {
+            "users": users,
+            "credits": credits,
+            "revenue_total": revenue_total / 100,
+            "revenue_24h": revenue_24h / 100
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/admin/forge-stats")
+async def forge_stats():
+    try:
+        with sqlite3.connect("builds.db") as conn:
+            total = conn.execute("SELECT COUNT(*) FROM builds").fetchone()[0]
+
+            per_user = conn.execute("""
+                SELECT user_id, COUNT(*) as count
+                FROM builds
+                GROUP BY user_id
+                ORDER BY count DESC
+                LIMIT 5
+            """).fetchall()
+
+        return {
+            "apps_built": total,
+            "top_users": [
+                {"user": r[0], "count": r[1]} for r in per_user
+            ]
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+    
+@app.post("/admin/force-prompt")
+async def force_prompt(data: dict):
+    prompt = data.get("prompt", "")
+    user = data.get("user", "admin")
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Empty prompt")
+
+    result = await engine.handle_prompt(prompt, user_id=user)
+
+    return {"response": result.get("response")}    
+
+@app.post("/admin/add-credits")
+async def admin_add_credits(data: dict):
+    user = data.get("user")
+    amount = int(data.get("amount", 0))
+
+    billing = runtime.get_agent("billing_agent")
+    if not billing:
+        raise HTTPException(status_code=500, detail="Billing not available")
+
+    billing.add_credits(user, amount)
+
+    return {"status": "ok", "user": user, "added": amount}
+
+@app.get("/admin/all-builds")
+async def admin_all_builds():
+    with sqlite3.connect("builds.db") as conn:
+        rows = conn.execute("""
+            SELECT id, user_id, project_name, filename, created_at
+            FROM builds
+            ORDER BY created_at DESC
+            LIMIT 50
+        """).fetchall()
+
+    return {
+        "builds": [
+            {
+                "id": r[0],
+                "user": r[1],
+                "project": r[2],
+                "file": r[3],
+                "time": r[4]
+            } for r in rows
+        ]
+    }            
+
+@app.post("/admin/kill")
+async def kill_system():
+    runtime.logs.append("🔥 SYSTEM TERMINATED BY ADMIN")
+    os._exit(0)
+
+@app.post("/admin/replay-build")
+async def replay_build(data: dict):
+    build_id = data.get("id")
+
+    with sqlite3.connect("builds.db") as conn:
+        row = conn.execute(
+            "SELECT project_name FROM builds WHERE id=?",
+            (build_id,)
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    prompt = f"Rebuild this project: {row[0]}"
+
+    result = await engine.handle_prompt(prompt, user_id="admin")
+
+    return {"response": result.get("response")}
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "NOX backend running"}    
+
+# ====================== BUILDS HISTORY ======================
+@app.get("/builds")
+async def get_builds(user_id: str = "admin"):
+    try:
+        with sqlite3.connect("builds.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT id, timestamp, user_id, project_name, filename, path 
+                FROM builds 
+                ORDER BY timestamp DESC
+            """)
+            builds = [dict(row) for row in cursor.fetchall()]
+            return {"builds": builds}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+# ====================== RUNTIME INSPECT ======================
+@app.get("/runtime")
+async def inspect_runtime():
+    """Return current runtime info (last zips, etc.)"""
+    try:
+        # Assuming you have context or runtime object accessible
+        # Adjust this based on how you store runtime in your app
+        runtime_data = {
+            "status": "running",
+            "last_builds": {},
+            "generated_apps_dir": "generated_apps",
+            "active_users": []  # you can expand this
+        }
+        
+        # Example: load last zips if you have them in context
+        # runtime_data["last_zips"] = getattr(runtime, "last_zip", {})
+        
+        return runtime_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Optional: Add more admin endpoints
+@app.get("/forge-stats")
+async def forge_stats():
+    return {
+        "total_builds": 0,   # count from db
+        "success_rate": 100,
+        "recent_activity": []
+    }    

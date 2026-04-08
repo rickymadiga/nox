@@ -3,6 +3,7 @@ import datetime
 import shutil
 import io
 import zipfile
+import sqlite3  # ← Added for build history
 from typing import Any, Dict
 
 from ..core.agent import Agent
@@ -20,6 +21,27 @@ class Assembler(Agent):
         # fallback context storage
         if isinstance(context, dict):
             context.setdefault("last_zip", {})
+
+        # Ensure build history table exists
+        self._init_build_history_db()
+
+    def _init_build_history_db(self):
+        """Create the builds table if it doesn't exist"""
+        try:
+            with sqlite3.connect("builds.db") as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS builds (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        user_id TEXT,
+                        project_name TEXT,
+                        filename TEXT,
+                        path TEXT
+                    )
+                """)
+                conn.commit()
+        except Exception as e:
+            print(f"[Assembler] Failed to initialize build history DB: {e}")
 
     def register(self) -> None:
         print("[Assembler] Subscribing to CODE_APPROVED")
@@ -80,7 +102,7 @@ class Assembler(Agent):
         print(f"[Assembler] ZIP ready: {len(zip_bytes):,} bytes")
 
         # ─────────────────────────────
-        # SAVE ZIP TO DISK (IMPORTANT)
+        # SAVE ZIP TO DISK
         # ─────────────────────────────
         zip_path = os.path.join(self.OUTPUT_BASE_DIR, f"{project_name}.zip")
         try:
@@ -91,10 +113,30 @@ class Assembler(Agent):
             print(f"[Assembler] Failed saving ZIP to disk: {e}")
 
         # ─────────────────────────────
-        # STORE ZIP IN RUNTIME (CRITICAL FIX)
+        # SAVE BUILD HISTORY (NEW) ← Cleanly Added
+        # ─────────────────────────────
+        try:
+            with sqlite3.connect("builds.db") as conn:
+                conn.execute(
+                    """
+                    INSERT INTO builds (user_id, project_name, filename, path)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (user_id, project_name, f"{project_name}.zip", zip_path)
+                )
+                conn.commit()
+
+            print(f"[Assembler] Build history saved for {user_id}")
+
+        except Exception as e:
+            print(f"[Assembler] Failed saving build history: {e}")
+
+        # ─────────────────────────────
+        # STORE ZIP IN RUNTIME
         # ─────────────────────────────
         try:
             runtime = self.context.get("runtime")
+            zip_filename = f"{project_name}.zip"
 
             if runtime:
                 if not hasattr(runtime, "last_zip") or not isinstance(runtime.last_zip, dict):
@@ -102,44 +144,53 @@ class Assembler(Agent):
 
                 runtime.last_zip[user_id] = {
                     "bytes": zip_bytes,
-                    "filename": f"{project_name}.zip",
+                    "filename": zip_filename,
+                    "path": zip_path
                 }
-
                 print(f"[Assembler] Stored ZIP in runtime for {user_id}")
 
-            # fallback (optional)
+            # Fallback to context
             if isinstance(self.context, dict):
                 self.context.setdefault("last_zip", {})
                 self.context["last_zip"][user_id] = {
                     "bytes": zip_bytes,
-                    "filename": f"{project_name}.zip",
+                    "filename": zip_filename,
+                    "path": zip_path
                 }
+                print(f"[Assembler] Stored ZIP in context fallback for {user_id}")
 
         except Exception as e:
-            print(f"[Assembler] Failed storing ZIP: {e}")
+            print(f"[Assembler] Failed storing ZIP for {user_id}: {e}")
 
         # ─────────────────────────────
         # NOTIFY LILY
         # ─────────────────────────────
-        await self.bus.publish(
-            Message(
-                sender="assembler",
-                recipient="lily",
-                message_type="forge_complete",
-                payload={
-                    "user_id": user_id,
-                    "project_name": project_name,
-                    "result": {
-                        "bytes": zip_bytes,
-                        "filename": f"{project_name}.zip",
+        try:
+            await self.bus.publish(
+                Message(
+                    sender="assembler",
+                    recipient="lily",
+                    message_type="forge_complete",
+                    payload={
+                        "user_id": user_id,
+                        "project_name": project_name,
+                        "result": {
+                            "bytes": zip_bytes,
+                            "filename": zip_filename,
+                        },
                     },
-                },
+                )
             )
-        )
 
-        print(f"[Assembler] ✅ Build complete → {project_name}")
+            print(f"[Assembler] ✅ Build complete → {project_name}")
 
-    # ─────────────────────────────
+        except Exception as e:
+            print(f"[Assembler] Failed to notify Lily: {e}")
+
+    # ===================================================================
+    # HELPER METHODS (unchanged)
+    # ===================================================================
+
     def _write_files(self, project_dir: str, files: Dict[str, str]) -> None:
         for rel_path, content in files.items():
             if not rel_path or not isinstance(content, str):

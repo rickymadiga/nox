@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
-
+DEV_USERS = ["nox", "admin", "cosmic ethic"]
 from ..core.capability_index import CapabilityIndex
 from .plugin_loader import load_plugins
 
@@ -171,7 +171,6 @@ class Engine:
     MIN_BUILD_CREDITS = 200  # 🔒 hard minimum threshold
 
     def __init__(self):
-
         self.runtime = Runtime()
         self._billing_locks = defaultdict(asyncio.Lock)
 
@@ -182,6 +181,23 @@ class Engine:
             logger.error(f"[PLUGIN LOAD ERROR] {e}", exc_info=True)
 
         logger.info("[ENGINE] Initialized and ready")
+
+    # ────────────────────────────────────────────────
+    # EVENT EMITTER (Clean Async Version)
+    # ────────────────────────────────────────────────
+    async def emit(self, event_type: str, payload: dict = None):
+        """Emit events to the internal bus"""
+        try:
+            from ..core.message import Message
+            message = Message(
+                message_type=event_type,
+                payload=payload or {},
+                sender="engine",
+                recipient="all"
+            )
+            await self.runtime.bus.publish(message)
+        except Exception as e:
+            print(f"[ENGINE EMIT ERROR] {e}")
 
     # ────────────────────────────────────────────────
     # EXECUTE AGENT
@@ -195,7 +211,7 @@ class Engine:
             agent = self.runtime.get_agent(agent_name)
             if not agent:
                 logger.warning(f"[Engine] Agent not found: {agent_name}")
-                return {"error": str(e)}
+                return {"error": "Agent not found"}
 
             logger.info(f"[Engine] Executing agent: {agent_name}")
 
@@ -212,14 +228,14 @@ class Engine:
                 return result
 
             logger.warning(f"[Engine] Agent {agent_name} has no run() method")
-            return {"error": str(e)}
+            return {"error": "Agent has no run() method"}
 
         except Exception as e:
             logger.error(f"[Engine] Failed to execute {agent_name}: {e}", exc_info=True)
             return {"error": str(e)}
 
     # ────────────────────────────────────────────────
-    # 🔥 PRE-AUTH BUILD FLOW
+    # 🔥 PRE-AUTH BUILD FLOW - Updated
     # ────────────────────────────────────────────────
     async def _run_build_with_capture(self, task, user_id, cost):
         billing = self.runtime.get_agent("billing_agent")
@@ -230,22 +246,46 @@ class Engine:
 
             await self.execute_agent("app_builder", task, user_id=user_id)
 
-            # ✅ SUCCESS → capture
-            billing.capture(user_id, cost)
-            logger.info(f"[BILLING] Captured {cost} credits for {user_id}")
+            # Skip capture for dev users
+            if user_id not in DEV_USERS:
+                billing.capture(user_id, cost)
+                logger.info(f"[BILLING] Captured {cost} credits for {user_id}")
+            else:
+                logger.info(f"[BILLING] DEV user {user_id} - build completed FREE")
+
+            # Optional: Emit success event
+            self.emit("build_complete", {
+                "user_id": user_id,
+                "status": "success",
+                "cost": cost,
+                "dev_mode": user_id in DEV_USERS
+            })
 
         except Exception as e:
-            # ❌ FAIL → release
-            billing.release(user_id, cost)
-            logger.error(f"[BILLING] Released {cost} credits for {user_id} due to error: {e}")
+            # ❌ FAIL → release (only for normal users)
+            if user_id not in DEV_USERS:
+                billing.release(user_id, cost)
+                logger.error(f"[BILLING] Released {cost} credits for {user_id} due to error: {e}")
+            else:
+                logger.error(f"[BILLING] DEV user {user_id} build failed: {e}")
+
+            # Optional: Emit failure event
+            self.emit("build_failed", {
+                "user_id": user_id,
+                "error": str(e),
+                "cost": cost
+            })
 
     # ────────────────────────────────────────────────
-    # HANDLE PROMPT (MAIN ENTRY)
+    # HANDLE PROMPT (MAIN ENTRY) - Updated with DEV Support
     # ────────────────────────────────────────────────
     async def handle_prompt(self, prompt: str, user_id: str = "default_user"):
         start_time = time.time()
 
         try:
+            # Early DEV check - skip everything for god mode
+            is_dev = user_id in DEV_USERS
+
             lily = self.runtime.get_agent("lily")
             if not lily:
                 return {"response": "❌ Lily agent not available"}
@@ -262,6 +302,12 @@ class Engine:
 
             # ───── QUOTE ─────
             if action == "quote":
+                if is_dev:
+                    return {
+                        "response": f"{message}\n\n🔥 **GOD MODE**: This build is FREE for you.",
+                        "price": 0,
+                        "awaiting_confirmation": False
+                    }
                 return {
                     "response": message,
                     "price": cost,
@@ -275,7 +321,6 @@ class Engine:
                     return {"response": "❌ Billing system unavailable"}
 
                 cost = max(self.MIN_BUILD_CREDITS, int(decision.get("price") or 0))
-
                 prompt_str = str(decision.get("prompt", prompt))
 
                 task = {
@@ -285,6 +330,31 @@ class Engine:
                     "context": decision.get("context") or {"user_id": user_id}
                 }
 
+                # 🔥 DEV USER SHORT-CIRCUIT
+                if is_dev:
+                    task["authorized"] = True
+                    asyncio.create_task(
+                        self.execute_agent("app_builder", task, user_id=user_id)
+                    )
+
+                    await self.emit("build_started", {   # ← Added await
+                        "user_id": user_id,
+                        "prompt": prompt_str,
+                        "cost": 0,
+                        "dev_mode": True
+                    })
+
+                    return {
+                        "response": f"🚀 God Mode Build Started (FREE - Unlimited)",
+                        "zip": None,
+                        "logs": list(getattr(self.runtime, "logs", []))[-10:],
+                        "graph": {
+                            "status": "running",
+                            "steps": ["Planner", "Coder", "Tester", "Reviewer", "Assembler"]
+                        }
+                    }
+
+                # ───── NORMAL USER FLOW (original logic preserved) ─────
                 lock = self._billing_locks[user_id]
 
                 async with lock:
@@ -294,16 +364,23 @@ class Engine:
                 if credits < cost:
                     return {"response": f"❌ Not enough credits. Need {cost}, have {credits}."}
 
-                    reserve = billing.reserve(user_id, cost)
+                reserve = billing.reserve(user_id, cost)
 
+                # Start build in background
                 asyncio.create_task(
                     self._run_build_with_capture(task, user_id, cost)
                 )
 
+                await self.emit("build_started", {   # ← Added await
+                    "user_id": user_id,
+                    "prompt": prompt_str,
+                    "cost": cost
+                })
+
                 return {
                     "response": f"🚀 Build started ({cost} credits reserved)",
                     "zip": None,
-                    "logs": list(self.runtime.logs)[-10:],
+                    "logs": list(getattr(self.runtime, "logs", []))[-10:],
                     "graph": {
                         "status": "running",
                         "steps": ["Planner", "Coder", "Tester", "Reviewer", "Assembler"]
@@ -324,6 +401,7 @@ class Engine:
         finally:
             duration = time.time() - start_time
             logger.info(f"[ENGINE] Completed in {duration:.2f}s")
+    
 # ────────────────────────────────────────────────
 # GLOBAL SINGLETON
 # ────────────────────────────────────────────────

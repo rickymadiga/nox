@@ -1,6 +1,5 @@
 from typing import Any
 from nox.core.agent import Agent  # ✅ correct base
-
 from .forge.arena.arena import run_forge
 
 
