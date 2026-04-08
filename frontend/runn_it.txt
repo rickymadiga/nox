@@ -1,4 +1,0 @@
-streamlit run frontend/app.py
-
-
-uvicorn api.server:app --reload --port 8000
