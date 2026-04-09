@@ -281,7 +281,7 @@ async def signup(data: AuthRequest):
 
     return {"message": "Account created successfully"}
 
-@router.post("/login")
+@app.post("/login")
 async def login(data: AuthRequest):
     username = data.username.lower().strip()
 
