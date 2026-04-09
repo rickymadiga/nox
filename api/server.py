@@ -51,12 +51,13 @@ if not PAYSTACK_SECRET_KEY:
 MAX_BCRYPT_BYTES = 72
 
 def normalize_password(password: str) -> str:
-    return password
+    return hashlib.sha256(password.encode()).hexdigest()
 
 def _truncate_bcrypt(password: str) -> str:
-    if len(password.encode("utf-8")) > MAX_BCRYPT_BYTES:
-        return password.encode("utf-8")[:MAX_BCRYPT_BYTES].decode("utf-8", errors="ignore")
-    return password
+    encoded = password.encoded("utf-8")
+    if len(encoded) > 72:
+        encoded = encoded[:72]
+    return encoded.decode("utf-8",errors="ignore")
 
 def hash_password(password: str) -> str:
     password = normalize_password(password)
