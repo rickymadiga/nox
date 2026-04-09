@@ -54,7 +54,7 @@ def normalize_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def _truncate_bcrypt(password: str) -> str:
-    encoded = password.encoded("utf-8")
+    encoded = password.encode("utf-8")
     if len(encoded) > 72:
         encoded = encoded[:72]
     return encoded.decode("utf-8",errors="ignore")
