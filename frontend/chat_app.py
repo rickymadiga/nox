@@ -5,7 +5,7 @@ import time
 # ────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────
-BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = "http:/i84.onrender.com/nox-u"
 
 st.set_page_config(page_title="NOX SMART WORLD", page_icon="🤖", layout="wide")
 st.markdown("<h1 style='text-align:center;'>NOX SMART WORLD</h1>", unsafe_allow_html=True)

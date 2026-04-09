@@ -272,7 +272,6 @@ async def signup(data: AuthRequest):
 
     return {"message": "Account created successfully"}
 
-
 @app.post("/login")
 async def login(data: AuthRequest):
     username = data.username.lower().strip()
@@ -304,6 +303,7 @@ async def login(data: AuthRequest):
 
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # Reset failed attempts
     with sqlite3.connect("users.db") as conn:
         conn.execute(
             "UPDATE users SET failed_attempts=0, lock_until=0 WHERE username=?",
@@ -311,11 +311,13 @@ async def login(data: AuthRequest):
         )
         conn.commit()
 
-    return {
-        "access_token": create_access_token(username),
-        "refresh_token": create_refresh_token(username),
-    }
+    token = create_access_token(username)
 
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": username   # ← This is what frontend expects
+    }
 
 # ────────────────────────────────────────────────
 # AUTO RECHARGE TOGGLE
@@ -742,29 +744,7 @@ async def admin_add_credits(data: dict):
 
     billing.add_credits(user, amount)
 
-    return {"status": "ok", "user": user, "added": amount}
-
-@app.get("/admin/all-builds")
-async def admin_all_builds():
-    with sqlite3.connect("builds.db") as conn:
-        rows = conn.execute("""
-            SELECT id, user_id, project_name, filename, created_at
-            FROM builds
-            ORDER BY created_at DESC
-            LIMIT 50
-        """).fetchall()
-
-    return {
-        "builds": [
-            {
-                "id": r[0],
-                "user": r[1],
-                "project": r[2],
-                "file": r[3],
-                "time": r[4]
-            } for r in rows
-        ]
-    }            
+    return {"status": "ok", "user": user, "added": amount}           
 
 @app.post("/admin/kill")
 async def kill_system():
@@ -792,46 +772,7 @@ async def replay_build(data: dict):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "NOX backend running"}    
-
-# ====================== BUILDS HISTORY ======================
-@app.get("/builds")
-async def get_builds(user_id: str = "admin"):
-    try:
-        with sqlite3.connect("builds.db") as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT id, timestamp, user_id, project_name, filename, path 
-                FROM builds 
-                ORDER BY timestamp DESC
-            """)
-            builds = [dict(row) for row in cursor.fetchall()]
-            return {"builds": builds}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {e}")
-
-
-# ====================== RUNTIME INSPECT ======================
-@app.get("/runtime")
-async def inspect_runtime():
-    """Return current runtime info (last zips, etc.)"""
-    try:
-        # Assuming you have context or runtime object accessible
-        # Adjust this based on how you store runtime in your app
-        runtime_data = {
-            "status": "running",
-            "last_builds": {},
-            "generated_apps_dir": "generated_apps",
-            "active_users": []  # you can expand this
-        }
-        
-        # Example: load last zips if you have them in context
-        # runtime_data["last_zips"] = getattr(runtime, "last_zip", {})
-        
-        return runtime_data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return {"status": "ok", "message": "NOX backend running"}
 
 # Optional: Add more admin endpoints
 @app.get("/forge-stats")
