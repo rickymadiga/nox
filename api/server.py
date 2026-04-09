@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 from nox.runtime.engine_runtime import engine
 from orchestrator.lily import register as register_lily
 from plugins.billing_agent.plugin import register as register_billing
+from fastapi import APIRouter
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -39,6 +40,7 @@ ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 runtime = engine.runtime
+router = APIRouter(prefix="/nox-u")
 
 if not PAYSTACK_SECRET_KEY:
     print("⚠️  WARNING: PAYSTACK_SECRET_KEY is not set in .env")
@@ -278,7 +280,7 @@ async def signup(data: AuthRequest):
 
     return {"message": "Account created successfully"}
 
-@app.post("/login")
+@router.post("/login")
 async def login(data: AuthRequest):
     username = data.username.lower().strip()
 
@@ -808,7 +810,4 @@ async def forge_stats():
         "recent_activity": []
     }    
 
-def require_admin(user: str = Depends(get_current_user)):
-    if user not in ["admin", "nox", "cosmic ethic"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
+    
