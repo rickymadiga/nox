@@ -192,6 +192,12 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
                 pass
         
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+# ───────────────── ADMIN GUARD ─────────────────
+def require_admin(user: str = Depends(get_current_user)) -> str:
+    if user not in ["admin", "nox", "cosmic ethic"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user    
 
 
 # ────────────────────────────────────────────────
@@ -668,34 +674,53 @@ async def download_build(build_id: int, user: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.get("/admin/dashboard")
-async def admin_dashboard():
+async def admin_dashboard(user: str = Depends(require_admin)):
     try:
+        # ───────────────── USERS ─────────────────
         with sqlite3.connect("users.db") as conn:
-            users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            users = conn.execute(
+                "SELECT COUNT(*) FROM users"
+            ).fetchone()[0]
 
+        # ───────────────── REVENUE ─────────────────
         with sqlite3.connect("payments.db") as conn:
             revenue_total = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='completed'"
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM payments
+                WHERE status = 'completed'
+                """
             ).fetchone()[0]
 
             revenue_24h = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='completed' AND created_at >= datetime('now','-1 day')"
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM payments
+                WHERE status = 'completed'
+                AND created_at >= datetime('now','-1 day')
+                """
             ).fetchone()[0]
 
+        # ───────────────── CREDITS ─────────────────
         billing = runtime.get_agent("billing_agent")
         credits = 0
-        if billing and hasattr(billing, "balances"):
-            credits = sum(billing.balances.values())
 
+        if billing and hasattr(billing, "balances"):
+            try:
+                credits = sum(billing.balances.values())
+            except Exception:
+                credits = 0
+
+        # ───────────────── RESPONSE ─────────────────
         return {
             "users": users,
             "credits": credits,
-            "revenue_total": revenue_total / 100,
-            "revenue_24h": revenue_24h / 100
+            "revenue_total": round(revenue_total / 100, 2),  # convert kobo → currency
+            "revenue_24h": round(revenue_24h / 100, 2),
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/forge-stats")
 async def forge_stats():
@@ -782,3 +807,8 @@ async def forge_stats():
         "success_rate": 100,
         "recent_activity": []
     }    
+
+def require_admin(user: str = Depends(get_current_user)):
+    if user not in ["admin", "nox", "cosmic ethic"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user

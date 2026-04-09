@@ -17,5 +17,4 @@ databases
 passlib[bcrypt]
 bcrypt
 groq
-
 dotenv

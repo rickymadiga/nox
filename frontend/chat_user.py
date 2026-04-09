@@ -5,7 +5,7 @@ import time
 # ────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────
-BACKEND_URL = "http://i84.onrender.com/nox-u"
+BACKEND_URL = "https://i84.onrender.com"  # ✅ FIXED (remove /nox-u unless mounted)
 
 st.set_page_config(page_title="NOX SMART WORLD", page_icon="🤖", layout="wide")
 st.markdown("<h1 style='text-align:center;'>NOX SMART WORLD</h1>", unsafe_allow_html=True)
@@ -18,7 +18,6 @@ defaults = {
     "token": None,
     "user_id": None,
     "credits": 0,
-    "auto_recharge": False,
     "last_upsell": None,
     "last_download": False,
     "last_zip_bytes": None,
@@ -28,7 +27,6 @@ defaults = {
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
-
 
 # ────────────────────────────────────────────────
 # HELPERS
@@ -44,6 +42,7 @@ def safe_json(res):
         detail = data.get("detail") or str(data)
         st.error(f"Error: {detail}")
         return None
+
     return data
 
 
@@ -78,7 +77,7 @@ def fetch_credits():
 
 
 # ────────────────────────────────────────────────
-# SIDEBAR - NORMAL USERS ONLY
+# SIDEBAR
 # ────────────────────────────────────────────────
 with st.sidebar:
     st.header("🛠️ NOX Controls")
@@ -86,10 +85,11 @@ with st.sidebar:
     if not st.session_state.token:
         st.subheader("🔑 Login / Signup")
 
-        username = st.text_input("Username", placeholder="Enter username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
+        username = st.text_input("Username", placeholder="Enter username")
+        password = st.text_input("Password", type="password")
 
         col1, col2 = st.columns(2)
+
         with col1:
             if st.button("Login", use_container_width=True):
                 if username and password:
@@ -105,11 +105,10 @@ with st.sidebar:
                 if username and password:
                     data = api_post("/signup", {"username": username, "password": password})
                     if data:
-                        st.success("✅ Account created! You can now login.")
+                        st.success("✅ Account created! Please login.")
 
     else:
-        # Logged in - Normal User View
-        st.success(f"👤 **{st.session_state.user_id}**")
+        st.success(f"👤 {st.session_state.user_id}")
         st.metric("💰 Credits", st.session_state.credits)
 
         st.divider()
@@ -120,9 +119,10 @@ with st.sidebar:
         if st.button("💰 Recharge Now", type="primary", use_container_width=True):
             with st.spinner("Connecting to Paystack..."):
                 data = api_post("/paystack/initiate", {"amount": amount}, auth=True)
+
                 if data and data.get("authorization_url"):
                     url = data["authorization_url"]
-                    st.success("Redirecting...")
+                    st.success("Redirecting to payment...")
                     st.markdown(f'<a href="{url}" target="_blank">Click here if not redirected</a>', unsafe_allow_html=True)
                 else:
                     st.error("Payment failed to start")
@@ -131,43 +131,49 @@ with st.sidebar:
             st.session_state.clear()
             st.rerun()
 
-
 # ────────────────────────────────────────────────
-# MAIN CHAT AREA
+# HEADER
 # ────────────────────────────────────────────────
 if st.session_state.user_id:
-    st.caption(f"👤 **{st.session_state.user_id}** | 💰 **{st.session_state.credits}** credits")
+    st.caption(f"👤 {st.session_state.user_id} | 💰 {st.session_state.credits} credits")
 else:
     st.caption("👤 Please login to start building")
 
-# Chat History
+# ────────────────────────────────────────────────
+# CHAT HISTORY
+# ────────────────────────────────────────────────
 for role, content in st.session_state.messages:
     with st.chat_message("user" if role == "user" else "assistant"):
         st.markdown(content)
 
-# Chat Input
+# ────────────────────────────────────────────────
+# CHAT INPUT
+# ────────────────────────────────────────────────
 if st.session_state.token:
     if prompt := st.chat_input("What do you want to build today?"):
         st.session_state.messages.append(("user", prompt))
 
         with st.chat_message("assistant"):
-            with st.spinner("NOX is cooking..."):
+            with st.spinner("⚙️ NOX is building your app..."):
                 result = api_post("/chat", {"prompt": prompt}, auth=True, timeout=120)
 
                 if result:
-                    msg = result.get("response", "No response received")
-                    st.session_state.last_download = True
+                    msg = result.get("response", "No response")
+
+                    # ✅ ONLY trigger download when zip exists
+                    if result.get("zip") is not None:
+                        st.session_state.last_download = True
+                        st.session_state.last_zip_bytes = None
+
                     st.session_state.last_upsell = result.get("upsell")
+
                 else:
                     msg = "❌ Something went wrong. Try again."
 
             st.markdown(msg)
 
         st.session_state.messages.append(("assistant", msg))
-
-        # Auto refresh credits
         st.session_state.credits = fetch_credits()
-
 
 # ────────────────────────────────────────────────
 # DOWNLOAD SECTION
@@ -176,15 +182,20 @@ if st.session_state.token and st.session_state.last_download:
     st.success("🎉 Your app is ready!")
 
     if st.session_state.last_zip_bytes is None:
+        st.info("⚙️ Finalizing your app package...")
+
         with st.spinner("Preparing download..."):
             dl_res = requests.get(
                 f"{BACKEND_URL}/download/latest",
                 headers={"Authorization": f"Bearer {st.session_state.token}"},
                 timeout=60
             )
+
             if dl_res.status_code == 200:
                 st.session_state.last_zip_bytes = dl_res.content
                 st.session_state.last_filename = f"nox_app_{int(time.time())}.zip"
+            else:
+                st.warning("Download not ready yet.")
 
     if st.session_state.last_zip_bytes:
         st.download_button(
@@ -196,23 +207,28 @@ if st.session_state.token and st.session_state.last_download:
             type="primary"
         )
 
+    # ✅ Retry Button
+    if st.button("🔄 Retry Download", use_container_width=True):
+        st.session_state.last_zip_bytes = None
+        st.rerun()
 
 # ────────────────────────────────────────────────
 # BUILD HISTORY
 # ────────────────────────────────────────────────
 if st.session_state.token:
     st.subheader("📦 Your Build History")
+
     history = api_get("/builds", auth=True)
 
     if history and history.get("builds"):
         for build in history["builds"]:
             with st.expander(f"📁 {build.get('project_name', 'App')}"):
-                st.caption(f"Built on: {build.get('timestamp', '')}")
-                # Add download button per build if you implement /download/{id} later
+                st.caption(f"Built on: {build.get('created_at', '')}")
     else:
-        st.info("No builds yet. Start chatting to create your first app!")
+        st.info("No builds yet. Start building something!")
 
-
-# Low credits warning
+# ────────────────────────────────────────────────
+# LOW CREDIT WARNING
+# ────────────────────────────────────────────────
 if st.session_state.token and st.session_state.credits <= 10:
     st.warning("⚠️ Low credits! Recharge to continue building.")
